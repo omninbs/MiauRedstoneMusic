@@ -121,9 +121,22 @@ SIDE_AXIS = {
     "north": "x"
 }
 
-SUPPORT_BLOCK = "minecraft:wool"
-CONNECTION_BLOCK = "minecraft:wool"
-FALLING_BLOCK_SUPPORT = "minecraft:wool"
+# 歌词文字的朝向（/mpe text towards=yaw,pitch,roll）：
+# 文字需正对轨道起点一侧（即朝向「轨道延伸方向的反方向」），
+# 使站在起点处沿轨道方向看过去能正常阅读。
+# 已知：轨道朝 north 延伸时，towards=-90 让文字正面朝 south（起点侧）。
+# 由此推算其余方向（每转一个方向差 90°）：
+#   north -> -90，south -> 90，east -> 0，west -> 180
+TEXT_TOWARDS_YAW = {
+    "north": -90,
+    "south": 90,
+    "east": 0,
+    "west": 180
+}
+
+SUPPORT_BLOCK = "minecraft:white_wool"
+CONNECTION_BLOCK = "minecraft:white_wool"
+FALLING_BLOCK_SUPPORT = "minecraft:white_wool"
 
 # ── 歌词处理 ─────────────────────────────────────────────────
 

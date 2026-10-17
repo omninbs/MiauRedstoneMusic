@@ -1,23 +1,512 @@
 {
   "type": "noteblock-web-lyrics",
-  "formatVersion": 1,
+  "formatVersion": 2,
+  "laneCount": 3,
   "tempo": 13,
-  "lyrics": {
-    "234": {
-      "text": "sddfa sdf ",
-      "duration": 14
-    },
-    "247": {
-      "text": "asddf",
-      "duration": 0
-    },
-    "250": {
-      "text": "asd awdf aerfga ",
-      "duration": 0
-    },
-    "265": {
-      "text": "asdf asdf asdf ",
+  "lyrics": [
+    {
+      "tick": 92,
+      "lane": 0,
+      "text": "起",
       "duration": 4
+    },
+    {
+      "tick": 96,
+      "lane": 0,
+      "text": "来",
+      "duration": 12
+    },
+    {
+      "tick": 108,
+      "lane": 0,
+      "text": "不",
+      "duration": 4
+    },
+    {
+      "tick": 112,
+      "lane": 0,
+      "text": "愿",
+      "duration": 6
+    },
+    {
+      "tick": 118,
+      "lane": 0,
+      "text": "做",
+      "duration": 2
+    },
+    {
+      "tick": 120,
+      "lane": 0,
+      "text": "奴",
+      "duration": 4
+    },
+    {
+      "tick": 124,
+      "lane": 0,
+      "text": "隶",
+      "duration": 2
+    },
+    {
+      "tick": 126,
+      "lane": 0,
+      "text": "的",
+      "duration": 2
+    },
+    {
+      "tick": 128,
+      "lane": 0,
+      "text": "人",
+      "duration": 8
+    },
+    {
+      "tick": 136,
+      "lane": 0,
+      "text": "们",
+      "duration": 11
+    },
+    {
+      "tick": 148,
+      "lane": 0,
+      "text": "把",
+      "duration": 4
+    },
+    {
+      "tick": 152,
+      "lane": 0,
+      "text": "我",
+      "duration": 4
+    },
+    {
+      "tick": 156,
+      "lane": 0,
+      "text": "们",
+      "duration": 2
+    },
+    {
+      "tick": 158,
+      "lane": 0,
+      "text": "的",
+      "duration": 2
+    },
+    {
+      "tick": 160,
+      "lane": 0,
+      "text": "血",
+      "duration": 8
+    },
+    {
+      "tick": 168,
+      "lane": 0,
+      "text": "肉",
+      "duration": 8
+    },
+    {
+      "tick": 176,
+      "lane": 0,
+      "text": "筑",
+      "duration": 6
+    },
+    {
+      "tick": 182,
+      "lane": 0,
+      "text": "成",
+      "duration": 2
+    },
+    {
+      "tick": 184,
+      "lane": 0,
+      "text": "我",
+      "duration": 6
+    },
+    {
+      "tick": 190,
+      "lane": 0,
+      "text": "们",
+      "duration": 2
+    },
+    {
+      "tick": 192,
+      "lane": 0,
+      "text": "新",
+      "duration": 6
+    },
+    {
+      "tick": 198,
+      "lane": 0,
+      "text": "的",
+      "duration": 2
+    },
+    {
+      "tick": 200,
+      "lane": 0,
+      "text": "长",
+      "duration": 8
+    },
+    {
+      "tick": 208,
+      "lane": 0,
+      "text": "城",
+      "duration": 16
+    },
+    {
+      "tick": 224,
+      "lane": 0,
+      "text": "中",
+      "duration": 8
+    },
+    {
+      "tick": 232,
+      "lane": 0,
+      "text": "华",
+      "duration": 8
+    },
+    {
+      "tick": 240,
+      "lane": 0,
+      "text": "民",
+      "duration": 8
+    },
+    {
+      "tick": 248,
+      "lane": 0,
+      "text": "族",
+      "duration": 8
+    },
+    {
+      "tick": 256,
+      "lane": 0,
+      "text": "到",
+      "duration": 4
+    },
+    {
+      "tick": 260,
+      "lane": 0,
+      "text": "了",
+      "duration": 8
+    },
+    {
+      "tick": 268,
+      "lane": 0,
+      "text": "最",
+      "duration": 4
+    },
+    {
+      "tick": 272,
+      "lane": 0,
+      "text": "危",
+      "duration": 4
+    },
+    {
+      "tick": 276,
+      "lane": 0,
+      "text": "险",
+      "duration": 2
+    },
+    {
+      "tick": 278,
+      "lane": 0,
+      "text": "的",
+      "duration": 2
+    },
+    {
+      "tick": 280,
+      "lane": 0,
+      "text": "时",
+      "duration": 8
+    },
+    {
+      "tick": 288,
+      "lane": 0,
+      "text": "候",
+      "duration": 16
+    },
+    {
+      "tick": 304,
+      "lane": 0,
+      "text": "每",
+      "duration": 6
+    },
+    {
+      "tick": 310,
+      "lane": 0,
+      "text": "个",
+      "duration": 2
+    },
+    {
+      "tick": 312,
+      "lane": 0,
+      "text": "人",
+      "duration": 4
+    },
+    {
+      "tick": 316,
+      "lane": 0,
+      "text": "被",
+      "duration": 4
+    },
+    {
+      "tick": 320,
+      "lane": 0,
+      "text": "迫",
+      "duration": 6
+    },
+    {
+      "tick": 326,
+      "lane": 0,
+      "text": "着",
+      "duration": 2
+    },
+    {
+      "tick": 328,
+      "lane": 0,
+      "text": "发",
+      "duration": 4
+    },
+    {
+      "tick": 332,
+      "lane": 0,
+      "text": "出",
+      "duration": 4
+    },
+    {
+      "tick": 336,
+      "lane": 0,
+      "text": "最",
+      "duration": 4
+    },
+    {
+      "tick": 340,
+      "lane": 0,
+      "text": "后",
+      "duration": 2
+    },
+    {
+      "tick": 342,
+      "lane": 0,
+      "text": "的",
+      "duration": 2
+    },
+    {
+      "tick": 344,
+      "lane": 0,
+      "text": "吼",
+      "duration": 8
+    },
+    {
+      "tick": 352,
+      "lane": 0,
+      "text": "声",
+      "duration": 12
+    },
+    {
+      "tick": 364,
+      "lane": 0,
+      "text": "起",
+      "duration": 4
+    },
+    {
+      "tick": 368,
+      "lane": 0,
+      "text": "来",
+      "duration": 12
+    },
+    {
+      "tick": 380,
+      "lane": 0,
+      "text": "起",
+      "duration": 4
+    },
+    {
+      "tick": 384,
+      "lane": 0,
+      "text": "来",
+      "duration": 12
+    },
+    {
+      "tick": 396,
+      "lane": 0,
+      "text": "起",
+      "duration": 4
+    },
+    {
+      "tick": 400,
+      "lane": 0,
+      "text": "来",
+      "duration": 16
+    },
+    {
+      "tick": 416,
+      "lane": 0,
+      "text": "我",
+      "duration": 6
+    },
+    {
+      "tick": 422,
+      "lane": 0,
+      "text": "们",
+      "duration": 2
+    },
+    {
+      "tick": 424,
+      "lane": 0,
+      "text": "万",
+      "duration": 4
+    },
+    {
+      "tick": 428,
+      "lane": 0,
+      "text": "众",
+      "duration": 4
+    },
+    {
+      "tick": 432,
+      "lane": 0,
+      "text": "一",
+      "duration": 8
+    },
+    {
+      "tick": 440,
+      "lane": 0,
+      "text": "心",
+      "duration": 8
+    },
+    {
+      "tick": 448,
+      "lane": 0,
+      "text": "冒",
+      "duration": 6
+    },
+    {
+      "tick": 454,
+      "lane": 0,
+      "text": "着",
+      "duration": 2
+    },
+    {
+      "tick": 456,
+      "lane": 0,
+      "text": "敌",
+      "duration": 2
+    },
+    {
+      "tick": 458,
+      "lane": 0,
+      "text": "人",
+      "duration": 3
+    },
+    {
+      "tick": 461,
+      "lane": 0,
+      "text": "的",
+      "duration": 3
+    },
+    {
+      "tick": 464,
+      "lane": 0,
+      "text": "炮",
+      "duration": 8
+    },
+    {
+      "tick": 472,
+      "lane": 0,
+      "text": "火",
+      "duration": 8
+    },
+    {
+      "tick": 480,
+      "lane": 0,
+      "text": "前",
+      "duration": 8
+    },
+    {
+      "tick": 488,
+      "lane": 0,
+      "text": "进",
+      "duration": 8
+    },
+    {
+      "tick": 496,
+      "lane": 0,
+      "text": "冒",
+      "duration": 6
+    },
+    {
+      "tick": 502,
+      "lane": 0,
+      "text": "着",
+      "duration": 2
+    },
+    {
+      "tick": 504,
+      "lane": 0,
+      "text": "敌",
+      "duration": 2
+    },
+    {
+      "tick": 506,
+      "lane": 0,
+      "text": "人",
+      "duration": 3
+    },
+    {
+      "tick": 509,
+      "lane": 0,
+      "text": "的",
+      "duration": 3
+    },
+    {
+      "tick": 512,
+      "lane": 0,
+      "text": "炮",
+      "duration": 8
+    },
+    {
+      "tick": 520,
+      "lane": 0,
+      "text": "火",
+      "duration": 8
+    },
+    {
+      "tick": 528,
+      "lane": 0,
+      "text": "前",
+      "duration": 8
+    },
+    {
+      "tick": 536,
+      "lane": 0,
+      "text": "进",
+      "duration": 8
+    },
+    {
+      "tick": 544,
+      "lane": 0,
+      "text": "前",
+      "duration": 8
+    },
+    {
+      "tick": 552,
+      "lane": 0,
+      "text": "进",
+      "duration": 8
+    },
+    {
+      "tick": 560,
+      "lane": 0,
+      "text": "前",
+      "duration": 8
+    },
+    {
+      "tick": 568,
+      "lane": 0,
+      "text": "进",
+      "duration": 8
+    },
+    {
+      "tick": 576,
+      "lane": 0,
+      "text": "进",
+      "duration": 8
     }
-  }
+  ]
 }

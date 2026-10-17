@@ -117,14 +117,35 @@ def auto_group_by_mode_on_layers(layers_info: List[Dict], mode: int) -> Dict[int
     """
     对虚拟层列表进行自动分组
     layers_info: 列表元素为 {'vid': int, 'original_id': int, 'side': str, 'inst': int, 'cat': str}
+    mode: 1=同乐器优先  2=最大化合并  3=顺序系统音色合并
     返回 {vid: group_id}
     """
+    layer_to_group = {}
+    group_id = 0
+
+    if mode == 3:
+        # 顺序系统音色合并：严格按音轨原有顺序（从上到下），
+        # 只合并相邻且音色相同的轨道，每组最多 3 条；
+        # 音色不同或已满 3 条就另起一组。
+        ordered = sorted(layers_info, key=lambda x: x['vid'])
+        i = 0
+        while i < len(ordered):
+            inst = ordered[i]['inst']
+            j = i
+            group = []
+            while j < len(ordered) and len(group) < 3 and ordered[j]['inst'] == inst:
+                group.append(ordered[j]['vid'])
+                j += 1
+            for vid in group:
+                layer_to_group[vid] = group_id
+            group_id += 1
+            i = j
+        return layer_to_group
+
     if mode == 1:
         sorted_vids = sorted(layers_info, key=lambda x: (x['cat'], x['vid']))
     else:
         sorted_vids = sorted(layers_info, key=lambda x: x['vid'])
-    layer_to_group = {}
-    group_id = 0
     i = 0
     while i < len(sorted_vids):
         group = []

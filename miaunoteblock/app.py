@@ -49,77 +49,9 @@ from .instruments import (
     vertical_compress,
 )
 from .layout import calc_nest_layers, compute_min_radius, compute_offsets
-from .lyrics import build_lyrics_track, edit_lyrics_settings, import_lyrics_json, parse_lyrics
+from .lyrics import build_lyrics_track, edit_lyrics_settings, import_lyrics_json
+from .particles import build_particle_commands, edit_particle_settings
 from .generation import build_all_commands_virtual, find_structure_bottom, generate_schematic_from_commands
-
-def edit_lyrics_track(song, config):
-    """交互式选择歌词轨道"""
-    print(Ansi.title("\n=== 歌词轨道设置 ==="))
-    print(Ansi.info("选择哪个原始轨道作为歌词轨道（每个音符对应歌词的一个字）。"))
-    print(Ansi.dim("选择后，该轨道会保留音符盒发声，并在下方生成同步的歌词命令方块轨道。"))
-    available_layers = sorted({note.layer for note in song.notes})
-    for lid in available_layers:
-        layer_obj = next((l for l in song.layers if l.id == lid), None)
-        name = layer_obj.name if layer_obj and layer_obj.name else f"音轨{lid}"
-        inst, cat = analyze_track_instrument(song, lid)
-        note_count = len([n for n in song.notes if n.layer == lid])
-        print(f"  {lid}: {Ansi.colorize(name, Ansi.WHITE)} ({cat}) - {note_count} 音符")
-
-    current = config.get("lyrics_track")
-    if current is not None:
-        print(Ansi.info(f"当前设置: 轨道 {current}"))
-    else:
-        print(Ansi.dim("当前未设置歌词轨道"))
-
-    print(Ansi.prompt("请输入歌词轨道ID (直接回车=不修改，输入 -1=禁用): "))
-    inp = input().strip()
-    if not inp:
-        return
-    try:
-        lid = int(inp)
-        if lid == -1:
-            config["lyrics_track"] = None
-            print(Ansi.info("已禁用歌词功能"))
-        elif lid in available_layers:
-            config["lyrics_track"] = lid
-            print(Ansi.success(f"已设置歌词轨道: {lid}"))
-        else:
-            print(Ansi.error("轨道ID不存在，未修改"))
-    except:
-        print(Ansi.error("无效输入，未修改"))
-
-    save_config(config)
-
-def edit_lyrics_text(config):
-    """交互式输入歌词文本"""
-    print(Ansi.title("\n=== 歌词文本输入 ==="))
-    print(Ansi.info("请输入歌词文本，使用空格分段，换行分隔行。"))
-    print(Ansi.info("每段对应连续的一组音符，段首音符显示整段歌词。"))
-    print(Ansi.info("示例: \"只因为 你那 渴望自由 的心脏\\n被困在张 没空隙的 网\""))
-    print()
-    current = config.get("lyrics_text", "")
-    if current:
-        print(Ansi.dim("当前歌词:"))
-        print(current)
-        print()
-    print(Ansi.prompt("请输入歌词 (多行输入，输入空行结束):"))
-    lines = []
-    while True:
-        try:
-            line = input()
-            if not line:
-                break
-            lines.append(line)
-        except EOFError:
-            break
-    text = '\n'.join(lines)
-    if text:
-        config["lyrics_text"] = text
-        segments = parse_lyrics(text)
-        print(Ansi.success(f"已保存歌词，共 {len(segments)} 段"))
-    elif current and not text:
-        print(Ansi.info("保持原有歌词不变"))
-    save_config(config)
 
 # ── 移除空音轨、垂直压缩（保持不变）───────────────────────────────
 
@@ -219,8 +151,9 @@ def edit_groups_interactive_virtual(virtual_layers: List[Dict]) -> Dict[int, int
             print("选择自动合并模式：")
             print("    [1] 同乐器优先")
             print("    [2] 最大化合并")
+            print("    [3] 顺序系统音色合并（按音轨顺序，相邻同音色才合并，每组最多 3 条）")
             m = input(Ansi.prompt("模式: ")).strip()
-            mode = int(m) if m in ('1','2') else 1
+            mode = int(m) if m in ('1','2','3') else 1
             layer_to_group = auto_group_by_mode_on_layers(virtual_layers, mode)
             print(Ansi.success(f"自动分组完成，共 {len(set(layer_to_group.values()))} 组"))
             return layer_to_group
@@ -580,20 +513,30 @@ def main():
         else:
             print(f"  全部使用默认模式")
         print(Ansi.colorize("[歌词显示]", Ansi.MAGENTA))
-        lyrics_track = config.get("lyrics_track")
-        if lyrics_track is not None:
-            print(f"  歌词轨道: 原始音轨 {lyrics_track}")
-            imported_lyrics = config.get("lyrics_import") or {}
-            lyrics_text = config.get("lyrics_text", "")
-            if imported_lyrics:
-                print(f"  已导入歌词: {len(imported_lyrics)} 条（优先于手动文本）")
-            elif lyrics_text:
-                segments = parse_lyrics(lyrics_text)
-                print(f"  歌词已设置，共 {len(segments)} 段")
+        imported_lyrics = config.get("lyrics_import") or {}
+        if imported_lyrics:
+            print(f"  已导入歌词: {len(imported_lyrics)} 条（导入即启用歌词功能）")
+            if config.get("lyrics_stream"):
+                print(f"  流式歌词: 已启用（{config.get('lyrics_stream_seconds', 2.0)} 秒 / "
+                      f"上限 {config.get('lyrics_stream_max_len', 18)} 字）")
             else:
-                print(f"  歌词文本未设置")
+                print(f"  流式歌词: 未启用")
+            print(f"  命令方块链: 整个结构下方向下 {config.get('lyrics_chain_y_offset', 1)} 格，最前面一条线")
         else:
-            print(f"  未启用歌词显示")
+            print(f"  未启用歌词显示（可在 [9] 导入歌词 JSON）")
+
+        print(Ansi.colorize("[粒子特效]", Ansi.MAGENTA))
+        p_layers = config.get("particles_layers") or []
+        if config.get("particles_enabled") and p_layers:
+            ball_groups = sorted({layer_to_group.get(v, v) for v in p_layers})
+            print(f"  已启用: {len(p_layers)} 条轨道 -> {len(ball_groups)} 颗弹力球")
+            print(f"  trail={config.get('particles_trail', 24)} height={config.get('particles_height', 3)} "
+                  f"curve={config.get('particles_curve', 'arc')} "
+                  f"color={config.get('particles_color') or '自动分配'}")
+        elif config.get("particles_enabled"):
+            print(f"  已启用，但未选择任何轨道（可在 [10] 选择）")
+        else:
+            print(f"  未启用（可在 [10] 设置）")
 
         show_tracks_virtual(virtual_layers, layer_to_group, gsm)
 
@@ -605,10 +548,9 @@ def main():
         print("[5] 设置立体声音轨")
         print("[6] 切换中继器均匀速度模式 " + ("(已启用)" if config.get("uniform_repeater_mode", False) else "(已禁用)"))
         print("[7] 设置分组生成模式（默认/阶梯向下）")
-        print("[8] 设置歌词轨道")
-        print("[9] 输入歌词文本")
-        print("[10] 歌词显示与命令方块链位置")
-        print("[11] 导入歌词 JSON")
+        print("[8] 歌词显示与命令方块链位置")
+        print("[9] 导入/清空歌词 JSON（导入即启用歌词）")
+        print("[10] 粒子特效（音符盒跳动）")
         choice = input(Ansi.prompt("选择 (回车开始生成): ")).strip()
 
         if choice == "1":
@@ -676,13 +618,11 @@ def main():
         elif choice == "7":
             edit_group_staircase_modes(config, layer_to_group, virtual_layers)
         elif choice == "8":
-            edit_lyrics_track(song, config)
-        elif choice == "9":
-            edit_lyrics_text(config)
-        elif choice == "10":
             edit_lyrics_settings(config)
-        elif choice == "11":
-            import_lyrics_json(config)
+        elif choice == "9":
+            import_lyrics_json(config, getattr(song.header, "tempo", None))
+        elif choice == "10":
+            edit_particle_settings(config, virtual_layers, layer_to_group)
         elif not choice:
             max_in_file = max(n.tick for n in song.notes) if song.notes else 0
             try:
@@ -691,14 +631,9 @@ def main():
                 print(Ansi.error("输入错误"))
                 continue
 
-            print(Ansi.info("请输入结构起始坐标（结构文件会以实际方块范围归一化保存）"))
-            try:
-                start_x = int(input(Ansi.prompt("起始 X (默认0): ") or "0"))
-                start_y = int(input(Ansi.prompt("起始 Y (默认0): ") or "0"))
-                start_z = int(input(Ansi.prompt("起始 Z (默认0): ") or "0"))
-            except ValueError:
-                print(Ansi.error("坐标必须为整数"))
-                continue
+            # 结构可放在任何位置，统一用 0,0,0 作为内部基准坐标；
+            # schematic 保存时会按实际方块范围归一化，文字命令用 ~~~ 相对坐标。
+            start_x = start_y = start_z = 0
 
             # 计算分组
             groups = sorted(set(layer_to_group.values()))
@@ -710,12 +645,14 @@ def main():
 
             print(Ansi.info("正在预计算方块位置..."))
             use_lamp = config.get("use_redstone_lamp", False)
+            particle_note_events = []
             commands, activation_positions = build_all_commands_virtual(
                 virtual_layers, layer_to_group, [group_offset_dict[gid] for gid in groups],
                 (start_x, start_y, start_z), config["direction"], max_tick,
                 use_lamp=use_lamp,
                 uniform_repeater_mode=config.get("uniform_repeater_mode", False),
-                group_staircase_modes=config.get("group_staircase_modes", {})
+                group_staircase_modes=config.get("group_staircase_modes", {}),
+                note_events=particle_note_events,
             )
             # 添加命令方块启动链
             dx, dy, dz = DIR_OFFSET[config["direction"]]
@@ -731,14 +668,15 @@ def main():
             # 歌词轨道链（先构建，便于把歌词链的启动点并入启动链）
             # 命令方块链的纵向位置由 build_lyrics_track 按「整个结构最低方块」相对计算，
             # 默认紧贴结构下方；文字显示坐标仍为结构上方的绝对锚点。
-            if config.get("lyrics_track") is not None and (config.get("lyrics_import") or config.get("lyrics_text")):
-                print(Ansi.info("正在处理歌词轨道..."))
+            if config.get("lyrics_import"):
+                print(Ansi.info("正在处理歌词链..."))
             lyr_cmds, lyr_activation, _lyr_chain_y = build_lyrics_track(
-                song.notes, virtual_layers, layer_to_group, group_offset_dict,
+                virtual_layers, group_offset_dict,
                 (start_x, start_y, start_z), config["direction"], max_tick, config,
                 use_lamp=use_lamp,
                 uniform_repeater_mode=config.get("uniform_repeater_mode", False),
                 struct_bottom_y=find_structure_bottom(commands),
+                tempo=getattr(song.header, "tempo", None),
             )
             # ─────────────────────────────────────────────────────────────
 
@@ -794,6 +732,12 @@ def main():
             commands = commands[:1] + cmdblock_cmds + commands[1:]
             # 歌词命令方块链（其启动点已并入上面的启动链）
             commands.extend(lyr_cmds)
+
+            # 粒子特效命令方块（音符盒跳动，由 MiauParticleEffects 模组驱动）
+            if config.get("particles_enabled") and (config.get("particles_layers") or []):
+                commands.extend(build_particle_commands(
+                    particle_note_events, activation_positions, config["direction"], config
+                ))
 
             schem_path = input(Ansi.prompt("保存结构文件的路径 (默认 ./redstone_music.schem): ")).strip()
             if not schem_path:

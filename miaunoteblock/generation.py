@@ -1,5 +1,6 @@
 """红石命令生成与 .schem 结构保存。"""
 
+import json
 import os
 import re
 from collections import defaultdict
@@ -15,6 +16,43 @@ from .constants import (
     SIDE_AXIS,
     Ansi,
 )
+
+COMMAND_MAX_LEN = 32500  # Minecraft 命令方块单条命令文本长度上限（达到即无法执行）
+_COMMAND_TEXT_RE = re.compile(r'\{Command:("(?:[^"\\]|\\.)*")')
+
+
+def warn_oversized_commands(commands) -> int:
+    """生成前检查所有命令方块：命令文本长度 ≥ COMMAND_MAX_LEN 时打印警告。
+
+    返回超限的命令方块数量。
+    """
+    setblock_pattern = re.compile(r'^setblock\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(.+)$')
+    oversized = []
+    for cmd in commands:
+        cmd = cmd.strip()
+        if not cmd or cmd.startswith('#'):
+            continue
+        m = setblock_pattern.match(cmd)
+        if not m:
+            continue
+        cm = _COMMAND_TEXT_RE.search(m.group(4))
+        if not cm:
+            continue
+        try:
+            cmd_text = json.loads(cm.group(1))
+        except (ValueError, TypeError):
+            cmd_text = cm.group(1)
+        if len(cmd_text) >= COMMAND_MAX_LEN:
+            coord = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            oversized.append((coord, len(cmd_text)))
+
+    if oversized:
+        print(Ansi.error(f"警告：{len(oversized)} 个命令方块的命令文本长度达到/超过 "
+                         f"{COMMAND_MAX_LEN} 字符，游戏可能无法执行："))
+        for coord, length in oversized:
+            print(Ansi.error(f"  命令方块 @ {coord}  长度 {length} 字符"))
+    return len(oversized)
+
 
 def note_to_pitch(key: int) -> int:
     return (key - 33) % 25
@@ -106,6 +144,8 @@ def generate_fill_commands(
     return fill_cmds
 
 def generate_schematic_from_commands(commands, output_path, base_name="redstone_music"):
+    # 生成前统一检查命令方块文本长度，超限时给出警告
+    warn_oversized_commands(commands)
     schem = mcschematic.MCSchematic()
     total_blocks = 0
     min_x = min_y = min_z = float('inf')
@@ -189,7 +229,8 @@ def build_all_commands_virtual(
     max_tick: int,
     use_lamp: bool = False,
     uniform_repeater_mode: bool = False,   # 原 repeater_gap_fill
-    group_staircase_modes: Dict[int, str] = None  # 每组生成模式
+    group_staircase_modes: Dict[str, str] = None,  # 每组生成模式
+    note_events: List[Tuple[int, int, int, int, int, int]] = None  # 收集 (gid, vid, tick, x, y, z)
 ) -> Tuple[List[str], Dict[int, Tuple[int, int, int]]]:
     dx, dy, dz = DIR_OFFSET[direction]
     facing = OPPOSITE_FACING[direction]
@@ -206,13 +247,15 @@ def build_all_commands_virtual(
         axis_step = dz
         axis_key = 'z'
 
-    # 收集每个组在每个tick的音符
+    # 收集每个组在每个tick的音符（同时记录音符所属的虚拟层 vid，供粒子特效定位）
+    if note_events is None:
+        note_events = []
     group_tick_notes = defaultdict(lambda: defaultdict(list))
     for vlayer in virtual_layers:
         gid = layer_to_group[vlayer['vid']]
         for note in vlayer['notes']:
             if 0 <= note.tick <= max_tick:
-                group_tick_notes[gid][note.tick].append(note)
+                group_tick_notes[gid][note.tick].append((note, vlayer['vid']))
 
     valid_ticks = set()
     for gid in groups:
@@ -364,13 +407,14 @@ def build_all_commands_virtual(
                 all_cmds.append(f"setblock {next_relay_x} {y} {next_relay_z} minecraft:repeater[facing={facing},delay=1]")
                 group_pos[gid] = (next_relay_x, y, next_relay_z)
             elif note_count == 1:
-                note = notes[0]
+                note, vid = notes[0]
                 pitch = note_to_pitch(get_note_key(note))
                 inst = note.instrument
                 if axis_key == 'x':
                     all_cmds.append(f"setblock {note_x} {y} {note_z} minecraft:note_block[note={pitch}]")
                 else:
                     all_cmds.append(f"setblock {note_x} {y} {note_z} minecraft:note_block[note={pitch}]")
+                note_events.append((gid, vid, valid_tick, note_x, y, note_z))
                 if inst != 0:
                     if axis_key == 'x':
                         all_cmds.append(f"setblock {note_x} {y-1} {note_z} {INSTRUMENT_BLOCK_MAP.get(inst, 'minecraft:stone')}")
@@ -395,16 +439,17 @@ def build_all_commands_virtual(
                 else:
                     left_pos = (note_x - side_step, side_y, note_z)
                     right_pos = (note_x + side_step, side_y, note_z)
-                sorted_notes = sorted(notes, key=lambda n: n.layer)
+                sorted_notes = sorted(notes, key=lambda nv: nv[0].layer)
                 if axis_key == 'x':
                     all_cmds.append(f"setblock {note_x} {y} {note_z} {base_block}")
                 else:
                     all_cmds.append(f"setblock {note_x} {y} {note_z} {base_block}")
-                for pos, note in zip([left_pos, right_pos], sorted_notes):
+                for pos, (note, vid) in zip([left_pos, right_pos], sorted_notes):
                     px, py, pz = pos
                     pitch = note_to_pitch(get_note_key(note))
                     inst = note.instrument
                     all_cmds.append(f"setblock {px} {py} {pz} minecraft:note_block[note={pitch}]")
+                    note_events.append((gid, vid, valid_tick, px, py, pz))
                     if inst != 0:
                         all_cmds.append(f"setblock {px} {py-1} {pz} {INSTRUMENT_BLOCK_MAP.get(inst, 'minecraft:stone')}")
                         if inst == 3:
@@ -415,10 +460,11 @@ def build_all_commands_virtual(
                 all_cmds.append(f"setblock {next_relay_x} {y} {next_relay_z} minecraft:repeater[facing={facing},delay=1]")
                 group_pos[gid] = (next_relay_x, y, next_relay_z)
             else:  # >=3
-                sorted_notes = sorted(notes, key=lambda n: n.layer)
-                mid_note = sorted_notes[1] if len(sorted_notes) > 1 else sorted_notes[0]
-                left_note = sorted_notes[0]
-                right_note = sorted_notes[-1]
+                sorted_pairs = sorted(notes, key=lambda nv: nv[0].layer)
+                mid_pair = sorted_pairs[1] if len(sorted_pairs) > 1 else sorted_pairs[0]
+                mid_note, mid_vid = mid_pair
+                left_note, left_vid = sorted_pairs[0]
+                right_note, right_vid = sorted_pairs[-1]
                 side_step = 1
                 side_y = y - 1 if is_stair else y  # 阶梯模式：侧边音符下降一格
                 if side_axis == 'z':
@@ -430,15 +476,17 @@ def build_all_commands_virtual(
                 pitch_mid = note_to_pitch(get_note_key(mid_note))
                 inst_mid = mid_note.instrument
                 all_cmds.append(f"setblock {note_x} {y} {note_z} minecraft:note_block[note={pitch_mid}]")
+                note_events.append((gid, mid_vid, valid_tick, note_x, y, note_z))
                 if inst_mid != 0:
                     all_cmds.append(f"setblock {note_x} {y-1} {note_z} {INSTRUMENT_BLOCK_MAP.get(inst_mid, 'minecraft:stone')}")
                     if inst_mid == 3:
                         all_cmds.append(f"setblock {note_x} {y-2} {note_z} {FALLING_BLOCK_SUPPORT}")
-                for pos, note in zip([left_pos, right_pos], [left_note, right_note]):
+                for pos, (note, vid) in zip([left_pos, right_pos], [(left_note, left_vid), (right_note, right_vid)]):
                     px, py, pz = pos
                     pitch = note_to_pitch(get_note_key(note))
                     inst = note.instrument
                     all_cmds.append(f"setblock {px} {py} {pz} minecraft:note_block[note={pitch}]")
+                    note_events.append((gid, vid, valid_tick, px, py, pz))
                     if inst != 0:
                         all_cmds.append(f"setblock {px} {py-1} {pz} {INSTRUMENT_BLOCK_MAP.get(inst, 'minecraft:stone')}")
                         if inst == 3:

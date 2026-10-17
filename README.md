@@ -199,16 +199,22 @@ The generated file can be loaded with a compatible Minecraft structure workflow,
 
 Generate a synchronous lyric track that renders through particles.
 
-1. Select an original NBS layer as the lyric track.
-2. Enter lyric segments separated by spaces, with line breaks separating lines.
-3. Configure color, scale, duration, enter time, exit time, vertical offset, and side offset.
+1. Import a lyric JSON exported by the lyric editor (menu `[9]`); importing a lyric file is what enables the lyric feature, and the same menu can clear it.
+2. Configure color, scale, duration, enter time, exit time, vertical offset, side offset, and the command-block chain height (menu `[8]`).
+3. Optionally enable streaming lyrics while importing: consecutive characters whose gap stays within the configured seconds accumulate into one growing line (`A -> AB -> ABC`) instead of replacing each other.
 4. Generate the `.schem` file.
 
 Each command block calls:
 
 ```text
-/mpe text "lyric segment" <x> <y> <z> color=white scale=1.0 duration=20 enter=5 exit=5
+/mpe text "lyric segment" ~ ~ ~ color=white scale=10.0 force=true duration=20 enter=5 exit=5 towards=-90,0,0
 ```
+
+Display coordinates are written as `~~~` offsets relative to each command block, so the text stays in place no matter where the structure is pasted. `scale=` is customizable (default `10.0`), and `force=true` is always emitted.
+
+`towards=` is derived from the track direction so the text always faces the track origin side: north `-90`, south `90`, east `0`, west `180`.
+
+With streaming lyrics enabled, every display point first clears the previous text, then shows the accumulated string from a chain command block placed directly below the event cell.
 
 MiauParticleEffects provides the `/mpe text` entry point and renders the text as particle-based display content. See [mpe_docs.md](mpe_docs.md) for the documented mod environment and command options.
 
