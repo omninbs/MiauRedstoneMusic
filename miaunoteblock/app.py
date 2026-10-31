@@ -1,29 +1,26 @@
 #!/usr/bin/env python3
-"""
-NBS 转红石音乐链 - 立体声与歌词命令方块版
-- fill 优化提速
-- 嵌套排版（圆/方）
-- 3 音轨合并
-- 乐器识别与自动分组
-- 核心音轨组选择
-- 音轨排序功能（按乐器归类，打击乐在后）
-- 立体声效果：选择特定音轨，左右对称分布，实现双声道
-- 歌词通过 MiauParticleEffects 命令方块轨道显示
-- 仅生成 .schem 结构文件
+"""MiauRedstoneMusic —— NBS 转红石音乐结构（.schem）。
+
+文本控制台菜单：
+- 音符 → 中继器链 + 音符盒（立体声 / 平铺 / 圆 / 方 / 半圆 / 嵌套）
+- 歌词 → 一个脉冲命令方块里的 ``/mpe text chain``（MiauParticleEffects 粒子字幕）
+- 粒子 → 每个参与组的 ``/mpe noteblock chain`` 弹力球
+
+配置只存在于内存中：不读取也不写入任何配置文件。
 """
 
 import json
-import math
-import os
-import sys
+import re
 import struct
-from collections import defaultdict, Counter
-from typing import List, Dict, Tuple, Set
+import sys
+from collections import defaultdict
+from typing import Dict, List, Tuple
 
 import pynbs
 
+
 def _patched_read_string(self):
-    # 读取 4 字节小端整数作为字符串长度
+    """pynbs 读取字符串：优先 UTF-8，失败时回退 cp1252（部分 NBS 用本地编码）。"""
     length_bytes = self.fileobj.read(4)
     if len(length_bytes) < 4:
         return ""  # 文件末尾，安全处理
@@ -34,14 +31,19 @@ def _patched_read_string(self):
     except UnicodeDecodeError:
         return raw.decode('cp1252', errors='replace')
 
+
 pynbs.Parser.read_string = _patched_read_string
 
-import mcschematic
 from pynbs import read as nbs_read
-from pynbs import Layer
 
-from .config import load_config, save_config
-from .constants import Ansi, DIR_OFFSET
+from .config import default_config
+from .console import ask_number, clear_screen, terminal_columns
+from .constants import Ansi, DIR_OFFSET, VERSION
+from .generation import (
+    build_all_commands_virtual,
+    find_structure_bottom,
+    generate_schematic_from_commands,
+)
 from .instruments import (
     analyze_track_instrument,
     auto_group_by_mode_on_layers,
@@ -49,705 +51,604 @@ from .instruments import (
     vertical_compress,
 )
 from .layout import calc_nest_layers, compute_min_radius, compute_offsets
-from .lyrics import build_lyrics_track, edit_lyrics_settings, import_lyrics_json
+from .lyrics import build_lyrics_chain, edit_lyrics_menu
 from .particles import build_particle_commands, edit_particle_settings
-from .generation import build_all_commands_virtual, find_structure_bottom, generate_schematic_from_commands
 
-# ── 移除空音轨、垂直压缩（保持不变）───────────────────────────────
+LAYOUT_STYLES = {
+    "1": ("flat", "平铺"),
+    "2": ("circle", "圆形"),
+    "3": ("square", "方形"),
+    "4": ("semicircle", "半圆"),
+    "5": ("semisquare", "半方形"),
+    "6": ("nest_circle", "嵌套圆"),
+    "7": ("nest_square", "嵌套方"),
+}
+STYLE_LABELS = {key: label for key, label in LAYOUT_STYLES.values()}
 
-def show_tracks_virtual(virtual_layers: List[Dict], layer_to_group: Dict[int, int], group_staircase_modes: Dict[str, str] = None):
-    print(Ansi.title("────────── 当前音轨分组（虚拟层）──────────"))
+# 结构固定沿 +X 延展（不再提供方向切换）
+STRUCTURE_DIRECTION = "east"
+
+ANSI_ESCAPE = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+
+
+def _visible_len(text: str) -> int:
+    return len(ANSI_ESCAPE.sub('', text))
+
+
+# ── 音轨展示 ─────────────────────────────────────────────────
+
+def _layer_label(song, virtual_layer: dict) -> Tuple[str, str]:
+    """返回 (显示名, 音色分类)；立体声副本会标注 (左)/(右)/(立体声)。"""
+    original_id = virtual_layer['original_id']
+    layer_obj = next((layer for layer in song.layers if layer.id == original_id), None)
+    name = layer_obj.name if layer_obj and layer_obj.name else f"音轨{original_id}"
+    side = virtual_layer.get('side')
+    if side == 'stereo':
+        name += " (立体声)"
+    elif side == 'left':
+        name += " (左)"
+    elif side == 'right':
+        name += " (右)"
+    return name, virtual_layer.get('cat', '?')
+
+
+def _group_lines(virtual_layers: List[dict], layer_to_group: Dict[int, int],
+                 group_staircase_modes: Dict[str, str], song) -> List[str]:
     groups = defaultdict(list)
     for vid, gid in layer_to_group.items():
         groups[gid].append(vid)
-
-    if group_staircase_modes is None:
-        group_staircase_modes = {}
-
-    # 构建虚拟层信息查找
-    vinfo = {v['vid']: v for v in virtual_layers}
-
-    import re
-    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-    def visible_len(s):
-        return len(ansi_escape.sub('', s))
+    info_by_vid = {layer['vid']: layer for layer in virtual_layers}
+    modes = group_staircase_modes or {}
 
     lines = []
     for gid in sorted(groups):
-        vids = sorted(groups[gid])
         parts = []
-        for vid in vids:
-            info = vinfo[vid]
-            orig_id = info['original_id']
-            side = info['side']
-            layer_obj = next((l for l in song.layers if l.id == orig_id), None)
-            name = layer_obj.name if layer_obj and layer_obj.name else f"音轨{orig_id}"
-            if side == 'stereo':
-                name_str = Ansi.colorize(f"{name} (立体声)", Ansi.WHITE)
-            elif side == 'left':
-                name_str = Ansi.colorize(f"{name} (左)", Ansi.WHITE)
-            elif side == 'right':
-                name_str = Ansi.colorize(f"{name} (右)", Ansi.WHITE)
-            else:
-                name_str = Ansi.colorize(name, Ansi.WHITE)
-            cat = info['cat']
+        for vid in sorted(groups[gid]):
+            info = info_by_vid[vid]
+            name, cat = _layer_label(song, info)
+            text = Ansi.colorize(name, Ansi.WHITE)
             if cat != "钢琴":
-                cat_str = Ansi.colorize(f"({cat})", Ansi.BLUE)
-                parts.append(f"{name_str}{cat_str}")
-            else:
-                parts.append(name_str)
-        group_header = Ansi.colorize(f"[组{gid+1}]", Ansi.CYAN, bold=True)
-        # 显示阶梯模式标签
-        mode = group_staircase_modes.get(str(gid), "default")
-        if mode == "staircase":
-            mode_tag = Ansi.colorize(" [阶梯↓]", Ansi.YELLOW)
-        else:
-            mode_tag = Ansi.colorize(" [默认]", Ansi.DIM)
-        line = group_header + mode_tag + " " + ", ".join(parts)
-        lines.append(line)
+                text += Ansi.colorize(f"({cat})", Ansi.BLUE)
+            parts.append(text)
+        header = Ansi.colorize(f"[组{gid + 1}]", Ansi.CYAN, bold=True)
+        if modes.get(str(gid)) == "staircase":
+            header += Ansi.colorize(" [阶梯↓]", Ansi.YELLOW)
+        lines.append(header + " " + ", ".join(parts))
+    return lines
 
+
+def show_tracks_virtual(virtual_layers: List[dict], layer_to_group: Dict[int, int],
+                        group_staircase_modes: Dict[str, str], song) -> None:
+    lines = _group_lines(virtual_layers, layer_to_group, group_staircase_modes, song)
     if not lines:
         return
-
-    term_width = os.get_terminal_size().columns
-    max_line_len = max(visible_len(l) for l in lines)
-    col_spacing = 2
-    col_width = max_line_len + col_spacing
-    cols = max(1, term_width // col_width)
-    rows = (len(lines) + cols - 1) // cols
-
+    print(Ansi.title("──────── 音轨分组 ────────"))
+    width = terminal_columns()
+    col_width = max(_visible_len(line) for line in lines) + 2
+    columns = max(1, width // col_width)
+    rows = (len(lines) + columns - 1) // columns
     for row in range(rows):
-        line_parts = []
-        for col in range(cols):
-            idx = row + col * rows
-            if idx < len(lines):
-                raw = lines[idx]
-                raw_len = visible_len(raw)
-                padding = col_width - raw_len
-                line_parts.append(raw + ' ' * padding)
-        print(''.join(line_parts).rstrip())
+        cells = []
+        for column in range(columns):
+            index = row + column * rows
+            if index < len(lines):
+                line = lines[index]
+                cells.append(line + ' ' * (col_width - _visible_len(line)))
+        print(''.join(cells).rstrip())
 
-def edit_groups_interactive_virtual(virtual_layers: List[Dict]) -> Dict[int, int]:
-    print(Ansi.title("\n=== 音轨分组编辑（虚拟层） ==="))
-    print(Ansi.info("可用虚拟层："))
-    for v in virtual_layers:
-        orig_id = v['original_id']
-        side = v['side']
-        name = f"音轨{orig_id}"
-        if side == 'stereo':
-            name += " (立体声)"
-        elif side == 'left':
-            name += " (左)"
-        elif side == 'right':
-            name += " (右)"
-        print(f"  {v['vid']}: {Ansi.colorize(name, Ansi.WHITE)} ({v['cat']})")
-    print(Ansi.dim("输入2~3个虚拟层序号合并，空格分隔，输入 'auto' 自动分组\n未输入的将单独成组"))
+
+# ── 分组编辑 ─────────────────────────────────────────────────
+
+def edit_groups_interactive_virtual(virtual_layers: List[dict], song) -> Dict[int, int]:
+    print(Ansi.title("\n=== 音轨分组编辑 ==="))
+    for layer in virtual_layers:
+        name, cat = _layer_label(song, layer)
+        print(f"  {layer['vid']}: {Ansi.colorize(name, Ansi.WHITE)} ({cat})")
+    print(Ansi.dim("输入 2~3 个虚拟层序号合并成一组（空格分隔），auto=自动分组，回车=结束"))
+
     pairs = []
+    valid_vids = {layer['vid'] for layer in virtual_layers}
     while True:
-        inp = input(Ansi.prompt("合并虚拟层 (回车结束): ")).strip()
-        if not inp:
+        raw = input(Ansi.prompt("合并虚拟层 (回车结束): ")).strip()
+        if not raw:
             break
-        if inp.lower() == "auto":
-            print("选择自动合并模式：")
+        if raw.lower() == "auto":
+            print("  自动分组模式：")
             print("    [1] 同乐器优先")
             print("    [2] 最大化合并")
-            print("    [3] 顺序系统音色合并（按音轨顺序，相邻同音色才合并，每组最多 3 条）")
-            m = input(Ansi.prompt("模式: ")).strip()
-            mode = int(m) if m in ('1','2','3') else 1
-            layer_to_group = auto_group_by_mode_on_layers(virtual_layers, mode)
+            print("    [3] 顺序同音色合并（相邻同音色才合并，每组最多 3 条）")
+            mode = input(Ansi.prompt("模式 (回车=1): ")).strip() or "1"
+            layer_to_group = auto_group_by_mode_on_layers(
+                virtual_layers, int(mode) if mode in ('1', '2', '3') else 1)
             print(Ansi.success(f"自动分组完成，共 {len(set(layer_to_group.values()))} 组"))
             return layer_to_group
-        parts = inp.split()
-        if len(parts) not in (2, 3):
-            print(Ansi.error("请输入2或3个数字"))
+        tokens = raw.split()
+        if len(tokens) not in (2, 3):
+            print(Ansi.error("请输入 2 或 3 个序号"))
             continue
         try:
-            ids = [int(p) for p in parts]
+            ids = [int(token) for token in tokens]
         except ValueError:
-            print(Ansi.error("无效数字"))
+            print(Ansi.error("序号必须是数字"))
             continue
-        if not all(any(v['vid']==i for v in virtual_layers) for i in ids):
+        if not all(vid in valid_vids for vid in ids):
             print(Ansi.error("序号不存在"))
+            continue
+        if len(set(ids)) != len(ids):
+            print(Ansi.error("序号重复"))
             continue
         pairs.append(tuple(sorted(ids)))
 
-    layer_to_group = {}
-    group_id = 0
+    layer_to_group: Dict[int, int] = {}
     assigned = set()
+    group_id = 0
     for ids in pairs:
-        if any(i in assigned for i in ids):
+        if any(vid in assigned for vid in ids):
             print(Ansi.error(f"重复分配，跳过: {ids}"))
             continue
-        for i in ids:
-            layer_to_group[i] = group_id
+        for vid in ids:
+            layer_to_group[vid] = group_id
         assigned.update(ids)
         group_id += 1
-    for v in virtual_layers:
-        if v['vid'] not in assigned:
-            layer_to_group[v['vid']] = group_id
+    for layer in virtual_layers:
+        if layer['vid'] not in assigned:
+            layer_to_group[layer['vid']] = group_id
             group_id += 1
-    print(Ansi.success("分组更新完毕"))
+    print(Ansi.success(f"分组更新完毕，共 {group_id} 组"))
     return layer_to_group
 
-def edit_layout(num_groups: int, config: dict, layer_to_group: Dict[int, int], virtual_layers: List[Dict]):
-    print(Ansi.title("── 排版样式设置 ──"))
-    print("[1] 平铺")
-    print("[2] 圆形")
-    print("[3] 方形")
-    print("[4] 半圆")
-    print("[5] 半方形")
-    print("[6] 嵌套圆")
-    print("[7] 嵌套方")
-    style_map = {"1": "flat", "2": "circle", "3": "square", "4": "semicircle",
-                 "5": "semisquare", "6": "nest_circle", "7": "nest_square"}
-    choice = input(Ansi.prompt("请选择样式 (1-7): ")).strip()
-    if choice not in style_map:
-        print(Ansi.error("无效，使用当前样式"))
-        return
-    config["layout_style"] = style_map[choice]
-    style = config["layout_style"]
 
-    if style != "flat":
-        print(Ansi.info("当前分组（虚拟层）："))
-        temp_groups = defaultdict(list)
-        for vid, gid in layer_to_group.items():
-            temp_groups[gid].append(vid)
-        vinfo = {v['vid']: v for v in virtual_layers}
-        for gid in sorted(temp_groups):
-            vids = sorted(temp_groups[gid])
-            parts = []
-            for vid in vids:
-                info = vinfo[vid]
-                orig_id = info['original_id']
-                side = info['side']
-                layer_obj = next((l for l in song.layers if l.id == orig_id), None)
-                name = layer_obj.name if layer_obj and layer_obj.name else f"音轨{orig_id}"
-                if side == 'stereo':
-                    name_str = Ansi.colorize(f"{name} (立体声)", Ansi.WHITE)
-                elif side == 'left':
-                    name_str = Ansi.colorize(f"{name} (左)", Ansi.WHITE)
-                elif side == 'right':
-                    name_str = Ansi.colorize(f"{name} (右)", Ansi.WHITE)
-                else:
-                    name_str = Ansi.colorize(name, Ansi.WHITE)
-                cat = info['cat']
-                if cat != "钢琴":
-                    cat_str = Ansi.colorize(f"({cat})", Ansi.BLUE)
-                    parts.append(f"{name_str}{cat_str}")
-                else:
-                    parts.append(name_str)
-            group_header = Ansi.colorize(f"[组{gid+1}]", Ansi.CYAN, bold=True)
-            print(group_header + " " + ", ".join(parts))
+# ── 排版 ─────────────────────────────────────────────────────
 
-        master = input(Ansi.prompt("核心组ID (留空则无): ")).strip()
-        if master:
-            try:
-                config["master_group"] = int(master) - 1
-            except:
-                config["master_group"] = None
-        else:
-            config["master_group"] = None
-
-        has_master = config["master_group"] is not None
-        min_r = compute_min_radius(num_groups, style, has_master)
-        print(Ansi.info(f"最小允许半径/边长: {min_r}"))
-
-        if style in ("nest_circle", "nest_square"):
-            max_r = config.get("layout_radius", 10)
-            max_layers = calc_nest_layers(num_groups, max_r, config.get("layer_gap", 4))
-            print(Ansi.info(f"最大可嵌套层数: {max_layers}"))
-            while True:
-                try:
-                    layers = int(input(Ansi.prompt(f"嵌套层数 (1~{max_layers}): ")))
-                    if 1 <= layers <= max_layers:
-                        config["nest_layers"] = layers
-                        break
-                except:
-                    pass
-                print(Ansi.error("输入无效"))
-            try:
-                gap = int(input(Ansi.prompt("层间距 (默认4): ") or "4"))
-                config["layer_gap"] = max(1, gap)
-            except:
-                config["layer_gap"] = 4
-
-        while True:
-            try:
-                radius = int(input(Ansi.prompt(f"半径/边长 (≥{min_r}): ") or str(min_r)))
-                if radius < min_r:
-                    print(Ansi.error(f"半径不得小于 {min_r}"))
-                    continue
-                config["layout_radius"] = radius
-                break
-            except:
-                print(Ansi.error("请输入整数"))
+def edit_layout(num_groups: int, config: dict, layer_to_group: Dict[int, int],
+                virtual_layers: List[dict], song) -> None:
+    print(Ansi.title("\n=== 排版设置 ==="))
+    current_style = config.get("layout_style", "flat")
+    for key, (style, label) in LAYOUT_STYLES.items():
+        mark = "*" if style == current_style else " "
+        print(f"  {mark}[{key}] {label}")
+    choice = input(Ansi.prompt(
+        f"样式 (1-7，回车保持 {STYLE_LABELS.get(current_style, current_style)}): ")).strip()
+    if not choice:
+        style = current_style
+    elif choice in LAYOUT_STYLES:
+        style = LAYOUT_STYLES[choice][0]
+        config["layout_style"] = style
     else:
+        print(Ansi.error("无效样式，未修改"))
+        return
+
+    if style == "flat":
+        config["flat_spacing"] = ask_number(
+            "平铺间距", config.get("flat_spacing", 3), int, 1)
+        config["master_group"] = None
+        print(Ansi.success("排版已更新"))
+        return
+
+    groups = sorted(set(layer_to_group.values()))
+    print(Ansi.info("当前分组："))
+    for line in _group_lines(virtual_layers, layer_to_group,
+                             config.get("group_staircase_modes", {}), song):
+        print("  " + line)
+
+    master = config.get("master_group")
+    hint = (f"1-{len(groups)}，0=无核心组，回车保持"
+            + (f"当前 {master + 1}" if master is not None else "当前无"))
+    raw = input(Ansi.prompt(f"核心组编号 ({hint}): ")).strip()
+    if raw:
         try:
-            spacing = int(input(Ansi.prompt("平铺间距 (默认3): ") or "3"))
-            config["flat_spacing"] = spacing
-        except:
-            pass
+            value = int(raw)
+        except ValueError:
+            print(Ansi.error("请输入数字，核心组未修改"))
+        else:
+            if value == 0:
+                config["master_group"] = None
+            elif 1 <= value <= len(groups):
+                config["master_group"] = groups[value - 1]
+            else:
+                print(Ansi.error("编号超出范围，核心组未修改"))
 
-    save_config(config)
-    print(Ansi.success("排版设置已更新"))
+    has_master = config.get("master_group") is not None
+    min_radius = compute_min_radius(num_groups, style, has_master)
+    config["layout_radius"] = ask_number(
+        f"半径/边长（最小 {min_radius}）", config.get("layout_radius", 5), int, min_radius)
 
-def edit_stereo_layers(song, config):
-    """交互式选择立体声音轨"""
-    print(Ansi.title("\n=== 立体声轨道设置 ==="))
-    print(Ansi.info("选择哪些原始音轨作为立体声（左右声道独立）。"))
-    print("立体声轨道的音符会同时出现在左右两条链上，并在排版中对称分布。")
-    print(Ansi.dim("当前可用的音轨（原始 layer ID）："))
-    # 获取所有非空音轨
-    available_layers = sorted({note.layer for note in song.notes})
-    for lid in available_layers:
-        layer_obj = next((l for l in song.layers if l.id == lid), None)
-        name = layer_obj.name if layer_obj and layer_obj.name else f"音轨{lid}"
-        inst, cat = analyze_track_instrument(song, lid)
-        print(f"  {lid}: {Ansi.colorize(name, Ansi.WHITE)} ({cat})")
-    print(Ansi.prompt("请输入要设为立体声的音轨ID，多个用空格分隔，直接回车跳过："))
-    inp = input().strip()
+    if style in ("nest_circle", "nest_square"):
+        max_layers = calc_nest_layers(num_groups, config["layout_radius"],
+                                      config.get("layer_gap", 4))
+        config["nest_layers"] = ask_number(
+            f"嵌套层数（最大 {max_layers}）", config.get("nest_layers", 1), int, 1, max_layers)
+        config["layer_gap"] = ask_number("层间距", config.get("layer_gap", 4), int, 1)
+
+    print(Ansi.success("排版已更新"))
+
+
+# ── 立体声 ───────────────────────────────────────────────────
+
+def edit_stereo_layers(song, config: dict) -> None:
+    print(Ansi.title("\n=== 立体声音轨 ==="))
+    print(Ansi.info("选中的音轨会在左右两条链上各放一次音符，并在排版中对称分布。"))
+    notes_by_layer = defaultdict(list)
+    for note in song.notes:
+        notes_by_layer[note.layer].append(note)
+    for layer_id in sorted(notes_by_layer):
+        layer_obj = next((layer for layer in song.layers if layer.id == layer_id), None)
+        name = layer_obj.name if layer_obj and layer_obj.name else f"音轨{layer_id}"
+        _, cat = analyze_track_instrument(song, layer_id, notes_by_layer[layer_id])
+        print(f"  {layer_id}: {Ansi.colorize(name, Ansi.WHITE)} ({cat})")
+    print(Ansi.dim(f"当前立体声轨: {config.get('stereo_layers') or '无'}"))
+    raw = input(Ansi.prompt("要设为立体声的音轨 ID（空格分隔，c=清空，回车=不改）: ")).strip()
+    if not raw:
+        return
+    if raw.lower() in ("c", "clear"):
+        config['stereo_layers'] = []
+        print(Ansi.success("已清除立体声设置（所有音轨为单声道）"))
+        return
+    available = set(notes_by_layer)
     stereo = []
-    if inp:
-        parts = inp.split()
-        for p in parts:
-            try:
-                lid = int(p)
-                if lid in available_layers:
-                    stereo.append(lid)
-                else:
-                    print(Ansi.error(f"忽略无效音轨ID: {lid}"))
-            except:
-                pass
-    config['stereo_layers'] = stereo
-    save_config(config)
-    if stereo:
-        print(Ansi.success(f"已设置立体声音轨: {stereo}"))
+    for token in raw.replace(",", " ").split():
+        try:
+            layer_id = int(token)
+        except ValueError:
+            print(Ansi.error(f"忽略无效音轨 ID: {token}"))
+            continue
+        if layer_id in available:
+            stereo.append(layer_id)
+        else:
+            print(Ansi.error(f"忽略不存在的音轨 ID: {layer_id}"))
+    config['stereo_layers'] = sorted(set(stereo))
+    if config['stereo_layers']:
+        print(Ansi.success(f"已设置立体声音轨: {config['stereo_layers']}"))
     else:
         print(Ansi.info("已清除立体声设置（所有音轨为单声道）"))
 
-def edit_group_staircase_modes(config, layer_to_group, virtual_layers):
-    """交互式设置每个分组的生成模式（默认/阶梯向下）"""
-    print(Ansi.title("\n=== 分组生成模式设置 ==="))
-    print(Ansi.info("为每个分组独立设置生成模式："))
-    print("  [默认] - 所有音符在同一水平面（默认模式）")
-    print("  [阶梯↓] - 侧边音符向下降一格，形成阶梯结构")
-    print()
-    group_staircase_modes = config.get("group_staircase_modes", {})
+
+# ── 分组生成模式 ─────────────────────────────────────────────
+
+def edit_group_staircase_modes(config: dict, layer_to_group: Dict[int, int],
+                               virtual_layers: List[dict], song) -> None:
+    print(Ansi.title("\n=== 分组生成模式 ==="))
+    print(Ansi.dim("默认 = 所有音符在同一水平面；阶梯↓ = 侧边音符向下降一格"))
+    modes = config.get("group_staircase_modes", {})
     groups = sorted(set(layer_to_group.values()))
-
-    # 显示当前状态
-    vinfo = {v['vid']: v for v in virtual_layers}
     for gid in groups:
-        vids = sorted([vid for vid, g in layer_to_group.items() if g == gid])
-        parts = []
-        for vid in vids:
-            info = vinfo[vid]
-            orig_id = info['original_id']
-            layer_obj = next((l for l in song.layers if l.id == orig_id), None)
-            name = layer_obj.name if layer_obj and layer_obj.name else f"音轨{orig_id}"
-            parts.append(name)
-        current_mode = group_staircase_modes.get(str(gid), "default")
-        mode_display = Ansi.colorize("阶梯↓", Ansi.YELLOW) if current_mode == "staircase" else Ansi.colorize("默认", Ansi.DIM)
-        group_label = Ansi.colorize(f"[组{gid+1}]", Ansi.CYAN, bold=True)
-        print(f"  {group_label} {mode_display}  ({', '.join(parts)})")
+        label = Ansi.colorize(f"[组{gid + 1}]", Ansi.CYAN, bold=True)
+        state = "阶梯↓" if modes.get(str(gid)) == "staircase" else "默认"
+        members = [_layer_label(song, layer)[0]
+                   for layer in virtual_layers if layer_to_group.get(layer['vid']) == gid]
+        print(f"  {label} {state}  ({', '.join(members)})")
 
-    print()
-    print(Ansi.prompt("输入要切换模式的组ID（用空格分隔，回车跳过）："))
-    inp = input().strip()
-    if not inp:
+    raw = input(Ansi.prompt("切换模式的组编号（空格分隔，回车=跳过）: ")).strip()
+    if not raw:
         return
-
-    for part in inp.split():
+    for token in raw.split():
         try:
-            gid = int(part) - 1  # 用户输入1-based，转换为0-based
-            if gid in groups:
-                current = group_staircase_modes.get(str(gid), "default")
-                new_mode = "staircase" if current != "staircase" else "default"
-                group_staircase_modes[str(gid)] = new_mode
-                display = Ansi.colorize("阶梯↓", Ansi.YELLOW) if new_mode == "staircase" else Ansi.colorize("默认", Ansi.DIM)
-                print(Ansi.success(f"组{gid+1} 已切换为 {display}"))
-            else:
-                print(Ansi.error(f"组{gid+1} 不存在，跳过"))
+            gid = int(token) - 1
         except ValueError:
-            print(Ansi.error(f"无效输入: {part}"))
+            print(Ansi.error(f"无效输入: {token}"))
+            continue
+        if gid not in groups:
+            print(Ansi.error(f"组{gid + 1} 不存在，跳过"))
+            continue
+        current = modes.get(str(gid), "default")
+        modes[str(gid)] = "default" if current == "staircase" else "staircase"
+        state = "阶梯↓" if modes[str(gid)] == "staircase" else "默认"
+        print(Ansi.success(f"组{gid + 1} 已切换为 {state}"))
+    config["group_staircase_modes"] = modes
 
-    config["group_staircase_modes"] = group_staircase_modes
-    save_config(config)
 
-# ── 主函数 ─────────────────────────────────────────────────
+# ── 虚拟层构建 ───────────────────────────────────────────────
 
-def main():
-    global song  # 为了让 show_tracks_virtual 访问
-    os.system('cls' if os.name == 'nt' else 'clear')
-    config = load_config()
-    print(Ansi.title("══════ NBS生成器 - MiauRedstoneMusic (阶梯模式版) ══════"))
-    print(Ansi.dim("作者: COM1919 | 版本: 3.3 (立体声+阶梯模式)"))
+def build_virtual_layers(song, stereo_layers: List[int]) -> List[dict]:
+    """把 NBS 音轨转成虚拟层；立体声音轨的每个音符复制一份。
 
-    nbs_path = 0
-    try:
-      
-        nbs_path = input(Ansi.prompt("NBS 文件路径: ") or "song.nbs").strip()
-    except:
-        nbs_path = input(Ansi.prompt("NBS 文件路径: ") or "song.nbs").strip()
+    按音符实际出现的音轨来遍历，音轨表里缺失或多余的条目都不会丢音符。
+    """
+    stereo = set(stereo_layers)
+    notes_by_layer = defaultdict(list)
+    for note in song.notes:
+        notes_by_layer[note.layer].append(note)
 
-    try:
-        song = nbs_read(nbs_path)
-    except Exception as e:
-        print(Ansi.error(f"读取 NBS 失败: {e}"))
-        sys.exit(1)
-
-    if not song.notes:
-        print(Ansi.error("错误：NBS 文件中没有任何音符，无法生成红石音乐链。"))
-        sys.exit(1)
-        
-    # 2. 询问用户是否按乐器排序
-    print(Ansi.prompt("\n请选择后续处理模式："))
-    print("  [1] 压缩后按乐器类型排序（打击乐在后，每个音轨一种乐器）")
-    print("  [2] 不处理")
-    mode = input(Ansi.prompt("请输入 (1/2): ")).strip()
-    if mode == "1":
-        print(Ansi.info("正在执行垂直压缩..."))
-        song = vertical_compress(song)
-        print(Ansi.success(f"压缩完成，原始音轨数：{len(song.layers)}"))
-        print(Ansi.info("正在按乐器类型重新排列音轨..."))
-        song = rearrange_tracks_by_instrument(song)
-        print(Ansi.success("乐器排序完成！"))
-        config["merge_groups"] = []
-        save_config(config)
-    elif mode == "2":
-        print(Ansi.info("好的"))
-    else:
-        print(Ansi.error("无效输入，默认跳过"))
-
-    # 3. 确保有一个空音轨
-    #song = ensure_one_empty_layer(song)
-    #print(Ansi.info(f"最终原始音轨数量（含空音轨）：{len(song.layers)}"))
-
-    # 4. 输出基本信息
-    max_layer = max(note.layer for note in song.notes) if song.notes else 0
-    print(Ansi.info(f"曲名: {song.header.song_name or '未知'}"))
-    print(Ansi.info(f"音符总数: {len(song.notes)}"))
-    print(Ansi.info(f"原始音轨数量: {max_layer+1}"))
-    print(Ansi.info(f"音乐作者: {song.header.original_author}"))
-    print(Ansi.info(f"描述: {song.header.description}"))
-
-    # 5. 构建虚拟层（基于立体声配置，正确方式：复制音符）
-    stereo_set = set(config.get('stereo_layers', []))
     virtual_layers = []
-    next_vid = 0
-    for orig_layer in song.layers:
-        lid = orig_layer.id
-        notes = [n for n in song.notes if n.layer == lid]
+    for layer_id in sorted(notes_by_layer):
+        notes = notes_by_layer[layer_id]
         if not notes:
-            continue  # 跳过空音轨
-        inst, cat = analyze_track_instrument(song, lid)
-        if lid in stereo_set:
-            # 立体声：复制每个音符一次，使每个 tick 有两个相同音符
+            continue
+        inst, cat = analyze_track_instrument(song, layer_id, notes)
+        if layer_id in stereo:
+            # 每个 tick 复制出一个相同音符，排版时会左右对称摆放
             stereo_notes = []
             for note in notes:
                 stereo_notes.append(note)
-                stereo_notes.append(note)      # 复制一份
-            stereo_notes.sort(key=lambda n: n.tick)   # 确保同一 tick 的两个音符相邻
+                stereo_notes.append(note)
+            stereo_notes.sort(key=lambda note: note.tick)
             virtual_layers.append({
-                'vid': next_vid,
-                'original_id': lid,
+                'vid': len(virtual_layers),
+                'original_id': layer_id,
                 'side': 'stereo',
                 'notes': stereo_notes,
                 'inst': inst,
-                'cat': cat
+                'cat': cat,
             })
-            next_vid += 1
         else:
             virtual_layers.append({
-                'vid': next_vid,
-                'original_id': lid,
+                'vid': len(virtual_layers),
+                'original_id': layer_id,
                 'side': None,
                 'notes': notes,
                 'inst': inst,
-                'cat': cat
+                'cat': cat,
             })
-            next_vid += 1
+    return virtual_layers
 
+
+# ── 配置总览 ─────────────────────────────────────────────────
+
+def print_summary(config: dict, virtual_layers: List[dict], layer_to_group: Dict[int, int],
+                  song) -> None:
+    style = config.get("layout_style", "flat")
+    style_text = STYLE_LABELS.get(style, style)
+    if style == "flat":
+        style_text += f" 间距={config.get('flat_spacing', 3)}"
+    elif style in ("nest_circle", "nest_square"):
+        style_text += (f" 半径={config.get('layout_radius')} 层数={config.get('nest_layers')}"
+                       f" 间距={config.get('layer_gap')}")
+    else:
+        style_text += f" 半径={config.get('layout_radius')}"
+    master = config.get("master_group")
+    if style != "flat" and master is not None:
+        style_text += f" 核心组={master + 1}"
+
+    mode = "均匀" if config.get("uniform_repeater_mode") else "合并"
+    song_name = getattr(song.header, "song_name", None) or "未知"
+    print(Ansi.title("══════ 当前配置 ══════"))
+    print(f"  曲目 {song_name} · 音符 {len(song.notes)} · 虚拟层 {len(virtual_layers)} · "
+          f"分组 {len(set(layer_to_group.values()))}")
+    print(f"  排版 {style_text} · 中继器{mode}模式 · 延展方向 +X")
+
+    stereo = config.get('stereo_layers') or []
+    stair_groups = [str(int(key) + 1) for key, value in
+                    (config.get("group_staircase_modes") or {}).items() if value == "staircase"]
+    print(f"  立体声 {stereo if stereo else '无'} · "
+          f"阶梯组 {', '.join(stair_groups) if stair_groups else '无'}")
+
+    lyrics_count = len(config.get("lyrics_import") or [])
+    if lyrics_count:
+        print(f"  歌词 {lyrics_count} 条 · "
+              f"流式{'开' if config.get('lyrics_stream') else '关'} · "
+              f"颜色 {config.get('lyrics_color')} · 字号 {config.get('lyrics_scale')} · "
+              f"保持距离 {config.get('lyrics_lead_distance')}")
+    else:
+        print(Ansi.dim("  歌词 未导入（[5] 导入即启用）"))
+
+    selected = config.get("particles_layers") or []
+    if config.get("particles_enabled") and selected:
+        groups = sorted({layer_to_group.get(vid, vid) for vid in selected})
+        print(f"  粒子 已启用 · {len(selected)} 条轨道 → {len(groups)} 颗球 · "
+              f"trail={config.get('particles_trail')} height={config.get('particles_height')} "
+              f"curve={config.get('particles_curve')}")
+    elif config.get("particles_enabled"):
+        print(Ansi.dim("  粒子 已启用但未选轨道（[6] 选择）"))
+    else:
+        print(Ansi.dim("  粒子 未启用（[6] 设置）"))
+
+
+def print_menu(config: dict) -> None:
+    print(Ansi.title("──────── 菜单 ────────"))
+    print("  [1] 音轨分组")
+    print("  [2] 排版")
+    print("  [3] 立体声")
+    print("  [4] 分组生成模式（默认 / 阶梯）")
+    print("  [5] 歌词字幕")
+    print("  [6] 粒子特效")
+    print(f"  [7] 中继器模式：{'合并' if not config.get('uniform_repeater_mode') else '均匀'}（切换）")
+    print("  [8] 退出")
+    print(Ansi.dim("  回车 = 按当前配置生成结构"))
+
+
+# ── 生成 ─────────────────────────────────────────────────────
+
+def _rel(value: int) -> str:
+    return "~" if value == 0 else f"~{value}"
+
+
+def _launch_chain(targets: List[Tuple[object, Tuple[int, int, int]]],
+                  start: Tuple[int, int, int], direction: str) -> List[str]:
+    """生成启动链：两列朝上的命令方块，分别放置与清除每个启动红石块。
+
+    targets 为 [(gid|None, 红石块坐标), ...]，顺序即启动顺序：
+    第 i 项在第 i 环（t0+i+1）放置红石块，第 0 环是脉冲命令方块。
+    """
+    dx, _, dz = DIR_OFFSET[direction]
+    start_x, start_y, start_z = start
+    place_x, place_z = start_x - 5 * dx, start_z - 5 * dz
+    clear_x, clear_z = start_x - 7 * dx, start_z - 7 * dz
+
+    chain = []
+    for index, (_, (ax, ay, az)) in enumerate(targets):
+        cy = start_y + index
+        place_cmd = (f"setblock {_rel(ax - place_x)} {_rel(ay - cy)} {_rel(az - place_z)} "
+                     f"minecraft:redstone_block")
+        clear_cmd = (f"setblock {_rel(ax - clear_x)} {_rel(ay - cy)} {_rel(az - clear_z)} "
+                     f"minecraft:air")
+        place_json = json.dumps(place_cmd)
+        clear_json = json.dumps(clear_cmd)
+        if index == 0:
+            chain.append(f"setblock {place_x} {cy} {place_z} "
+                         f"minecraft:command_block[facing=up]{{Command:{place_json}}}")
+            chain.append(f"setblock {clear_x} {cy} {clear_z} "
+                         f"minecraft:command_block[facing=up]{{Command:{clear_json}}}")
+        else:
+            chain.append(f"setblock {place_x} {cy} {place_z} "
+                         f"minecraft:chain_command_block[facing=up,conditional=false]"
+                         f"{{Command:{place_json},auto:1b}}")
+            chain.append(f"setblock {clear_x} {cy} {clear_z} "
+                         f"minecraft:chain_command_block[facing=up,conditional=false]"
+                         f"{{Command:{clear_json},auto:1b}}")
+    return chain
+
+
+def build_commands(config: dict, song, virtual_layers: List[dict],
+                   layer_to_group: Dict[int, int], max_tick: int) -> List[str]:
+    """生成完整的方块命令列表：音乐链 + 启动链 + 歌词 + 粒子。"""
+    groups = sorted(set(layer_to_group.values()))
+    offsets = compute_offsets(groups, config, len(groups))
+    group_offset_dict = {gid: offsets[index] for index, gid in enumerate(groups)}
+
+    print(Ansi.info("正在预计算方块位置..."))
+    note_events: List[Tuple[int, int, int, int, int, int]] = []
+    direction = STRUCTURE_DIRECTION
+    commands, activation_positions = build_all_commands_virtual(
+        virtual_layers, layer_to_group, [group_offset_dict[gid] for gid in groups],
+        (0, 0, 0), direction, max_tick,
+        uniform_repeater_mode=config.get("uniform_repeater_mode", False),
+        group_staircase_modes=config.get("group_staircase_modes", {}),
+        note_events=note_events,
+    )
+
+    # 歌词：一个（或数个）脉冲命令方块，放在结构底部
+    lyrics = None
+    if config.get("lyrics_import"):
+        lyrics = build_lyrics_chain(
+            virtual_layers, group_offset_dict, (0, 0, 0), direction, max_tick, config,
+            struct_bottom_y=find_structure_bottom(commands),
+            tempo=getattr(song.header, "tempo", None),
+        )
+
+    # 启动链：歌词命令方块的激活红石块排在前面（越早执行越好），随后每组一格
+    targets: List[Tuple[object, Tuple[int, int, int]]] = []
+    if lyrics:
+        targets.extend((None, position) for position in lyrics["activations"])
+    targets.extend(sorted(activation_positions.items(), key=lambda item: item[0]))
+    launch = _launch_chain(targets, (0, 0, 0), direction)
+    commands = commands[:1] + launch + commands[1:]
+
+    if lyrics:
+        commands.extend(lyrics["commands"])
+
+    if config.get("particles_enabled") and (config.get("particles_layers") or []):
+        commands.extend(build_particle_commands(
+            note_events, activation_positions, direction, config))
+    return commands
+
+
+def generate(config: dict, song, virtual_layers: List[dict], layer_to_group: Dict[int, int]) -> None:
+    max_in_file = max((note.tick for note in song.notes), default=0)
+    raw = input(Ansi.prompt(f"生成长度（≤{max_in_file} tick，回车=全部）: ")).strip()
+    if raw:
+        try:
+            max_tick = max(0, min(max_in_file, int(raw)))
+        except ValueError:
+            print(Ansi.error("输入无效，使用全部长度"))
+            max_tick = max_in_file
+    else:
+        max_tick = max_in_file
+
+    commands = build_commands(config, song, virtual_layers, layer_to_group, max_tick)
+
+    schem_path = input(Ansi.prompt("保存路径 (默认 ./redstone_music.schem): ")).strip()
+    if not schem_path:
+        schem_path = "./redstone_music.schem"
+    generate_schematic_from_commands(commands, schem_path)
+
+
+# ── 主流程 ───────────────────────────────────────────────────
+
+def _load_song(path: str):
+    try:
+        song = nbs_read(path)
+    except Exception as exc:
+        print(Ansi.error(f"读取 NBS 失败: {exc}"))
+        return None
+    if not song.notes:
+        print(Ansi.error("NBS 文件里没有任何音符，无法生成红石音乐链"))
+        return None
+    return song
+
+
+def _interactive() -> None:
+    clear_screen()
+    config = default_config()
+    print(Ansi.title("══════ MiauRedstoneMusic · NBS → 红石音乐结构 ══════"))
+    print(Ansi.dim(f"作者: COM1919 | 版本: {VERSION}"))
+
+    nbs_path = input(Ansi.prompt("NBS 文件路径 (默认 song.nbs): ")).strip().strip('"').strip("'")
+    song = _load_song(nbs_path or "song.nbs")
+    if song is None:
+        return
+
+    print(Ansi.title("\n=== 音轨预处理 ==="))
+    print("  [1] 先垂直压缩，再按乐器排序（打击乐在后，推荐）")
+    print("  [2] 保持原始音轨")
+    mode = input(Ansi.prompt("选择 (回车=1): ")).strip() or "1"
+    if mode == "1":
+        song = rearrange_tracks_by_instrument(vertical_compress(song))
+        print(Ansi.success(f"已压缩并重排，音轨数 {len(song.layers)}"))
+
+    print(Ansi.info(f"曲名: {song.header.song_name or '未知'}"))
+    print(Ansi.info(f"音乐作者: {song.header.original_author or '未知'}"))
+    print(Ansi.info(f"音符总数: {len(song.notes)}"))
+
+    virtual_layers = build_virtual_layers(song, config.get('stereo_layers', []))
     if not virtual_layers:
-        print(Ansi.error("没有找到任何有音符的虚拟层，无法生成。"))
-        sys.exit(1)
+        print(Ansi.error("没有找到任何有音符的音轨，无法生成"))
+        return
+    print(Ansi.success(f"已创建 {len(virtual_layers)} 个虚拟层"))
 
-    print(Ansi.success(f"已创建 {len(virtual_layers)} 个虚拟层（立体声效果：{len(stereo_set)} 个音轨被立体声化）"))
-
-    # 6. 交互循环
-    layer_to_group = {v['vid']: idx for idx, v in enumerate(virtual_layers)}
-    is_first_show_text = True
+    layer_to_group = {layer['vid']: index for index, layer in enumerate(virtual_layers)}
     while True:
-        if is_first_show_text:
-            is_first_show_text = False
-        else:
-            input("按回车键继续...")
-        os.system('cls' if os.name == 'nt' else 'clear')
-
-        print(Ansi.title("══════ 当前配置 ══════"))
-        print(Ansi.colorize("[生成参数]", Ansi.MAGENTA))
-        print(f"  线程数: {config.get('num_threads', 4)}")
-        print(f"  方向: {config['direction']}")
-        style = config.get("layout_style", "flat")
-        print(f"  排版: {style}", end="")
-        if style == "flat":
-            print(f" 间距={config.get('flat_spacing', 3)}")
-        elif style in ("nest_circle", "nest_square"):
-            print(f" 半径={config.get('layout_radius', 5)} 层数={config.get('nest_layers', 1)}")
-        else:
-            print(f" 半径={config.get('layout_radius', 5)}", end="")
-            if config.get("master_group") is not None:
-                print(f" 核心组={config['master_group']+1}", end="")
-            print()
-        print(Ansi.colorize("[立体声]", Ansi.MAGENTA))
-        stereo_layers = config.get('stereo_layers', [])
-        if stereo_layers:
-            print(f"  立体声音轨: {stereo_layers}")
-        else:
-            print(f"  无立体声")
-        print(Ansi.colorize("[分组生成模式]", Ansi.MAGENTA))
-        gsm = config.get("group_staircase_modes", {})
-        stair_groups = [str(int(k)+1) for k, v in gsm.items() if v == "staircase"]
-        if stair_groups:
-            print(f"  阶梯模式组: {', '.join(stair_groups)}")
-        else:
-            print(f"  全部使用默认模式")
-        print(Ansi.colorize("[歌词显示]", Ansi.MAGENTA))
-        imported_lyrics = config.get("lyrics_import") or {}
-        if imported_lyrics:
-            print(f"  已导入歌词: {len(imported_lyrics)} 条（导入即启用歌词功能）")
-            if config.get("lyrics_stream"):
-                print(f"  流式歌词: 已启用（{config.get('lyrics_stream_seconds', 2.0)} 秒 / "
-                      f"上限 {config.get('lyrics_stream_max_len', 18)} 字）")
-            else:
-                print(f"  流式歌词: 未启用")
-            print(f"  命令方块链: 整个结构下方向下 {config.get('lyrics_chain_y_offset', 1)} 格，最前面一条线")
-        else:
-            print(f"  未启用歌词显示（可在 [9] 导入歌词 JSON）")
-
-        print(Ansi.colorize("[粒子特效]", Ansi.MAGENTA))
-        p_layers = config.get("particles_layers") or []
-        if config.get("particles_enabled") and p_layers:
-            ball_groups = sorted({layer_to_group.get(v, v) for v in p_layers})
-            print(f"  已启用: {len(p_layers)} 条轨道 -> {len(ball_groups)} 颗弹力球")
-            print(f"  trail={config.get('particles_trail', 24)} height={config.get('particles_height', 3)} "
-                  f"curve={config.get('particles_curve', 'arc')} "
-                  f"color={config.get('particles_color') or '自动分配'}")
-        elif config.get("particles_enabled"):
-            print(f"  已启用，但未选择任何轨道（可在 [10] 选择）")
-        else:
-            print(f"  未启用（可在 [10] 设置）")
-
-        show_tracks_virtual(virtual_layers, layer_to_group, gsm)
-
-        print(Ansi.title("──────── 菜单 ────────"))
-        print("[1] 修改方向")
-        print("[2] 修改音轨分组（虚拟层）")
-        print("[3] 修改排版")
-        print("[4] 保存并退出")
-        print("[5] 设置立体声音轨")
-        print("[6] 切换中继器均匀速度模式 " + ("(已启用)" if config.get("uniform_repeater_mode", False) else "(已禁用)"))
-        print("[7] 设置分组生成模式（默认/阶梯向下）")
-        print("[8] 歌词显示与命令方块链位置")
-        print("[9] 导入/清空歌词 JSON（导入即启用歌词）")
-        print("[10] 粒子特效（音符盒跳动）")
-        choice = input(Ansi.prompt("选择 (回车开始生成): ")).strip()
+        clear_screen()
+        print_summary(config, virtual_layers, layer_to_group, song)
+        show_tracks_virtual(virtual_layers, layer_to_group,
+                            config.get("group_staircase_modes", {}), song)
+        print_menu(config)
+        choice = input(Ansi.prompt("选择 (回车=生成): ")).strip()
 
         if choice == "1":
-            d = input(Ansi.prompt(f"方向 ({config['direction']}): ") or config["direction"]).lower()
-            if d in DIR_OFFSET:
-                config["direction"] = d
-                save_config(config)
-            else:
-                print(Ansi.error("无效方向"))
+            layer_to_group = edit_groups_interactive_virtual(virtual_layers, song)
         elif choice == "2":
-            layer_to_group = edit_groups_interactive_virtual(virtual_layers)
-            save_config(config)
+            edit_layout(len(set(layer_to_group.values())), config,
+                        layer_to_group, virtual_layers, song)
         elif choice == "3":
-            num_groups = len(set(layer_to_group.values()))
-            edit_layout(num_groups, config, layer_to_group, virtual_layers)
-        elif choice == "4":
-            save_config(config)
-            print(Ansi.success("再见！"))
-            break
-        elif choice == "5":
             edit_stereo_layers(song, config)
-            # 重新构建虚拟层（使用正确方法）
-            stereo_set = set(config.get('stereo_layers', []))
-            virtual_layers = []
-            next_vid = 0
-            for orig_layer in song.layers:
-                lid = orig_layer.id
-                notes = [n for n in song.notes if n.layer == lid]
-                if not notes:
-                    continue
-                inst, cat = analyze_track_instrument(song, lid)
-                if lid in stereo_set:
-                    stereo_notes = []
-                    for note in notes:
-                        stereo_notes.append(note)
-                        stereo_notes.append(note)
-                    stereo_notes.sort(key=lambda n: n.tick)
-                    virtual_layers.append({
-                        'vid': next_vid,
-                        'original_id': lid,
-                        'side': 'stereo',
-                        'notes': stereo_notes,
-                        'inst': inst,
-                        'cat': cat
-                    })
-                    next_vid += 1
-                else:
-                    virtual_layers.append({
-                        'vid': next_vid,
-                        'original_id': lid,
-                        'side': None,
-                        'notes': notes,
-                        'inst': inst,
-                        'cat': cat
-                    })
-                    next_vid += 1
-            # 重置分组
-            layer_to_group = {v['vid']: idx for idx, v in enumerate(virtual_layers)}
-            print(Ansi.success(f"立体声设置已更新，重新创建了 {len(virtual_layers)} 个虚拟层"))
+            virtual_layers = build_virtual_layers(song, config.get('stereo_layers', []))
+            if not virtual_layers:
+                print(Ansi.error("没有可用音轨，无法继续"))
+                return
+            # 虚拟层变了，分组映射要重建
+            layer_to_group = {layer['vid']: index for index, layer in enumerate(virtual_layers)}
+            print(Ansi.success(f"立体声设置已更新，重建 {len(virtual_layers)} 个虚拟层"))
+        elif choice == "4":
+            edit_group_staircase_modes(config, layer_to_group, virtual_layers, song)
+        elif choice == "5":
+            edit_lyrics_menu(config, getattr(song.header, "tempo", None))
         elif choice == "6":
-            current = config.get("uniform_repeater_mode", False)
-            config["uniform_repeater_mode"] = not current
-            save_config(config)
-            print(Ansi.success(f"中继器填充模式已{'启用' if config['uniform_repeater_mode'] else '禁用'}"))
-        elif choice == "7":
-            edit_group_staircase_modes(config, layer_to_group, virtual_layers)
-        elif choice == "8":
-            edit_lyrics_settings(config)
-        elif choice == "9":
-            import_lyrics_json(config, getattr(song.header, "tempo", None))
-        elif choice == "10":
             edit_particle_settings(config, virtual_layers, layer_to_group)
+        elif choice == "7":
+            config["uniform_repeater_mode"] = not config.get("uniform_repeater_mode", False)
+            if config["uniform_repeater_mode"]:
+                print(Ansi.success("已切换为均匀模式：每个空白 tick 一个中继器，"
+                                   "时间最直观，但结构会明显变长"))
+            else:
+                print(Ansi.success("已切换为合并模式：每 4 个空白 tick 并成一个 delay=4 中继器，"
+                                   "结构更短（歌词/粒子会自动跟随压缩后的布局）"))
+        elif choice == "8":
+            print(Ansi.info("已退出（配置不会保存）"))
+            return
         elif not choice:
-            max_in_file = max(n.tick for n in song.notes) if song.notes else 0
-            try:
-                max_tick = int(input(Ansi.prompt(f"希望生成的长度 (≤{max_in_file} 回车默认): ") or str(max_in_file)))
-            except:
-                print(Ansi.error("输入错误"))
-                continue
-
-            # 结构可放在任何位置，统一用 0,0,0 作为内部基准坐标；
-            # schematic 保存时会按实际方块范围归一化，文字命令用 ~~~ 相对坐标。
-            start_x = start_y = start_z = 0
-
-            # 计算分组
-            groups = sorted(set(layer_to_group.values()))
-            num_groups = len(groups)
-
-            # 计算偏移量（移除了立体声配对参数）
-            offsets = compute_offsets(groups, config, num_groups)
-            group_offset_dict = {gid: offsets[i] for i, gid in enumerate(groups)}
-
-            print(Ansi.info("正在预计算方块位置..."))
-            use_lamp = config.get("use_redstone_lamp", False)
-            particle_note_events = []
-            commands, activation_positions = build_all_commands_virtual(
-                virtual_layers, layer_to_group, [group_offset_dict[gid] for gid in groups],
-                (start_x, start_y, start_z), config["direction"], max_tick,
-                use_lamp=use_lamp,
-                uniform_repeater_mode=config.get("uniform_repeater_mode", False),
-                group_staircase_modes=config.get("group_staircase_modes", {}),
-                note_events=particle_note_events,
-            )
-            # 添加命令方块启动链
-            dx, dy, dz = DIR_OFFSET[config["direction"]]
-            cb1_x = start_x - 5*dx
-            cb1_y = start_y
-            cb1_z = start_z if config["direction"] in ("east", "west") else start_z - 5*dz
-
-            cb2_x = start_x - 7*dx
-            cb2_y = start_y
-            cb2_z = start_z if config["direction"] in ("east", "west") else start_z - 7*dz
-
-            # ─────────────────────────────────────────────────────────────
-            # 歌词轨道链（先构建，便于把歌词链的启动点并入启动链）
-            # 命令方块链的纵向位置由 build_lyrics_track 按「整个结构最低方块」相对计算，
-            # 默认紧贴结构下方；文字显示坐标仍为结构上方的绝对锚点。
-            if config.get("lyrics_import"):
-                print(Ansi.info("正在处理歌词链..."))
-            lyr_cmds, lyr_activation, _lyr_chain_y = build_lyrics_track(
-                virtual_layers, group_offset_dict,
-                (start_x, start_y, start_z), config["direction"], max_tick, config,
-                use_lamp=use_lamp,
-                uniform_repeater_mode=config.get("uniform_repeater_mode", False),
-                struct_bottom_y=find_structure_bottom(commands),
-                tempo=getattr(song.header, "tempo", None),
-            )
-            # ─────────────────────────────────────────────────────────────
-
-            sorted_groups = sorted(activation_positions.items(), key=lambda x: x[0])
-            if lyr_activation is not None:
-                sorted_groups.append((-1, lyr_activation))
-            cmdblock_cmds = []
-            def rel_str(d: int) -> str:
-                if d == 0:
-                    return "~"
-                else:
-                    return f"~{d}"
-            # 在循环中计算每组命令方块的相对偏移
-            for i, (gid, (ax, ay, az)) in enumerate(sorted_groups):
-                # 放置柱（第一根柱子）坐标
-                if i == 0:
-                    cx1, cy1, cz1 = cb1_x, cb1_y, cb1_z
-                    cx2, cy2, cz2 = cb2_x, cb2_y, cb2_z
-                else:
-                    cx1, cy1, cz1 = cb1_x, cb1_y + i, cb1_z
-                    cx2, cy2, cz2 = cb2_x, cb2_y + i, cb2_z
-            
-                # 计算相对于放置柱命令方块的偏移（用于放置红石块的命令）
-                rel_x_place = ax - cx1
-                rel_y_place = ay - cy1
-                rel_z_place = az - cz1
-                # 计算相对于清除柱命令方块的偏移（用于清除红石块的命令）
-                rel_x_remove = ax - cx2
-                rel_y_remove = ay - cy2
-                rel_z_remove = az - cz2
-            
-                # 生成相对坐标命令
-                place_cmd = f"setblock {rel_str(rel_x_place)} {rel_str(rel_y_place)} {rel_str(rel_z_place)} minecraft:redstone_block"
-                remove_cmd = f"setblock {rel_str(rel_x_remove)} {rel_str(rel_y_remove)} {rel_str(rel_z_remove)} minecraft:air"
-            
-                place_json = json.dumps(place_cmd)
-                remove_json = json.dumps(remove_cmd)
-            
-                if i == 0:
-                    cmdblock_cmds.append(
-                        f"setblock {cx1} {cy1} {cz1} minecraft:command_block[facing=up]{{Command:{place_json}}}"
-                    )
-                    cmdblock_cmds.append(
-                        f"setblock {cx2} {cy2} {cz2} minecraft:command_block[facing=up]{{Command:{remove_json}}}"
-                    )
-                else:
-                    cmdblock_cmds.append(
-                        f"setblock {cx1} {cy1} {cz1} minecraft:chain_command_block[facing=up,conditional=false]{{Command:{place_json},auto:1b}}"
-                    )
-                    cmdblock_cmds.append(
-                        f"setblock {cx2} {cy2} {cz2} minecraft:chain_command_block[facing=up,conditional=false]{{Command:{remove_json},auto:1b}}"
-                    )
-            commands = commands[:1] + cmdblock_cmds + commands[1:]
-            # 歌词命令方块链（其启动点已并入上面的启动链）
-            commands.extend(lyr_cmds)
-
-            # 粒子特效命令方块（音符盒跳动，由 MiauParticleEffects 模组驱动）
-            if config.get("particles_enabled") and (config.get("particles_layers") or []):
-                commands.extend(build_particle_commands(
-                    particle_note_events, activation_positions, config["direction"], config
-                ))
-
-            schem_path = input(Ansi.prompt("保存结构文件的路径 (默认 ./redstone_music.schem): ")).strip()
-            if not schem_path:
-                schem_path = "./redstone_music.schem"
-            generate_schematic_from_commands(commands, schem_path)
-
-            input("按回车返回菜单...")
+            generate(config, song, virtual_layers, layer_to_group)
+            input(Ansi.prompt("按回车返回菜单..."))
         else:
             print(Ansi.error("无效选项"))
 
+
+def main() -> None:
+    try:
+        _interactive()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        print(Ansi.info("已中断"))
+
+
 if __name__ == "__main__":
     main()
-

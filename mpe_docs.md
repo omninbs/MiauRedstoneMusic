@@ -125,6 +125,46 @@ clarity:blur       从清晰到模糊
 /mpe text "移动歌词" 100 64 100 move=0,2,0,40,linear
 ```
 
+### 歌词链（生成器对接用）
+
+```text
+/mpe text chain ~~~ <歌词段> [选项]
+```
+
+- `~~~` 表示命令方块自身的方块坐标，生成器统一用它。
+- 命令方块必须是**脉冲型**（Impulse）；循环型每 tick 执行一次会不停重播。
+- 结构整体平移或复制后无需改数据：所有坐标都是相对锚点的。
+
+`<歌词段>` 的格式：
+
+```text
+x,y,z,start,duration,文字[;段内选项]|x,y,z,start,duration,文字[;段内选项]|...
+```
+
+| 字段 | 含义 |
+|---|---|
+| `x,y,z` | 相对锚点的方块偏移，可为小数或负数；文字中心 = 锚点 + 偏移 |
+| `start` | 从命令方块执行那一刻算起的 tick（20 tick = 1 秒），绝对时刻而非间隔 |
+| `duration` | 这段文字显示多少 tick（不含入场/出场动画），可省略 |
+| `文字` | 支持 `§4` / `&4` 颜色码；空格写成 `_`；不能含 `|` `;` `,` |
+| `段内选项` | 覆盖全局选项，用 `;` 分隔 |
+
+段与段用 `|` 分隔，顺序随意，可以重叠。选项与 `/mpe text` 相同（`color=` `scale=`
+`enter=` `exit=` `towards=` `gradient=` `fade=` `density=` `linger=` `id=` 等）。
+
+`id=` 默认取锚点坐标；同一 ID 再次执行等于重置重播，所以把超长命令拆成多条链时，
+每条必须给不同的 `id=`。
+
+调试命令：
+
+```text
+/mpe text chain status
+/mpe text chain clear
+/mpe text chain clear id=<ID>
+```
+
+MiauRedstoneMusic 会为每条歌词自动生成这种命令，并补上命令方块自身的 1 tick 执行延迟。
+
 ## 五、颜色系统
 
 ### 纯色

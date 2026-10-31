@@ -1,6 +1,6 @@
 """乐器识别、音轨重排、虚拟层分组与音轨结构变换。"""
 
-from collections import Counter, defaultdict
+from collections import defaultdict
 from typing import Dict, List, Tuple
 
 from pynbs import Layer
@@ -12,12 +12,10 @@ def get_instrument_category(inst_id: int) -> str:
         return "鼓类"
     return INSTRUMENT_NAMES.get(inst_id, f"乐器{inst_id}")
 
-def get_instrument_name(inst_id: int) -> str:
-    return INSTRUMENT_NAMES.get(inst_id, f"未知({inst_id})")
-
-def analyze_track_instrument(song, layer_id: int) -> Tuple[int, str]:
-    notes = [n for n in song.notes if n.layer == layer_id]
-    notes.sort(key=lambda n: n.tick)
+def analyze_track_instrument(song, layer_id: int, notes: list = None) -> Tuple[int, str]:
+    if notes is None:
+        notes = [n for n in song.notes if n.layer == layer_id]
+    notes = sorted(notes, key=lambda n: n.tick)
     counter = defaultdict(int)
     sample_size = 30
     while sample_size <= 90 and not counter:
@@ -39,8 +37,6 @@ def get_instrument_group_key(inst_id: int) -> tuple:
     return (inst_id in DRUM_INSTRUMENTS, inst_id)
 
 def rearrange_tracks_by_instrument(song):
-    from collections import defaultdict
-
     notes_by_instrument = defaultdict(list)
     for note in song.notes:
         notes_by_instrument[note.instrument].append(note)
@@ -96,22 +92,6 @@ def rearrange_tracks_by_instrument(song):
 
     return song
 
-def sort_groups_by_instrument(song, layer_to_group):
-    group_instruments = {}
-    for layer_id, group_id in layer_to_group.items():
-        notes = [n for n in song.notes if n.layer == layer_id]
-        if not notes:
-            continue
-        cnt = Counter(n.instrument for n in notes)
-        main_inst = cnt.most_common(1)[0][0]
-        group_instruments[group_id] = main_inst
-
-    unique_groups = sorted(set(layer_to_group.values()), key=lambda gid: get_instrument_group_key(group_instruments[gid]))
-    new_group_map = {old_gid: new_gid for new_gid, old_gid in enumerate(unique_groups)}
-    new_layer_to_group = {lid: new_group_map[gid] for lid, gid in layer_to_group.items()}
-    return new_layer_to_group
-
-
 # ── 自动分组（基于虚拟层） ─────────────────────────────────
 def auto_group_by_mode_on_layers(layers_info: List[Dict], mode: int) -> Dict[int, int]:
     """
@@ -164,53 +144,7 @@ def auto_group_by_mode_on_layers(layers_info: List[Dict], mode: int) -> Dict[int
         group_id += 1
     return layer_to_group
 
-def remove_empty_layers(song):
-    layers_with_notes = {note.layer for note in song.notes}
-    if not layers_with_notes:
-        song.layers = []
-        return song
-    id_map = {}
-    new_layers = []
-    new_id = 0
-    for layer in song.layers:
-        if layer.id in layers_with_notes:
-            id_map[layer.id] = new_id
-            new_layers.append(Layer(new_id, layer.name, layer.volume, layer.panning))
-            new_id += 1
-    for note in song.notes:
-        note.layer = id_map[note.layer]
-    song.layers = new_layers
-    return song
-
-def ensure_one_empty_layer(song):
-    song = remove_empty_layers(song)
-
-    layers_with_notes = {note.layer for note in song.notes}
-    all_layers = set(range(len(song.layers)))
-    empty_layers = all_layers - layers_with_notes
-
-    if not empty_layers:
-        new_id = len(song.layers)
-        empty_layer = Layer(new_id, "空音轨", 0, 0)
-        song.layers.append(empty_layer)
-    else:
-        keep_id = min(empty_layers)
-        new_layers = []
-        for idx, layer in enumerate(song.layers):
-            if idx == keep_id or idx not in empty_layers:
-                new_layers.append(layer)
-        id_map = {}
-        final_layers = []
-        for new_id, layer in enumerate(new_layers):
-            id_map[layer.id] = new_id
-            final_layers.append(Layer(new_id, layer.name, layer.volume, layer.panning))
-        for note in song.notes:
-            note.layer = id_map[note.layer]
-        song.layers = final_layers
-    return song
-
 def vertical_compress(song):
-    from collections import defaultdict
     tick_notes = defaultdict(list)
     for note in song.notes:
         tick_notes[note.tick].append(note)

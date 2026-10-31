@@ -2,6 +2,8 @@
 
 from typing import Dict
 
+VERSION = "4.0"
+
 class Ansi:
     RESET = "\033[0m"
     BOLD = "\033[1m"
@@ -23,13 +25,15 @@ class Ansi:
     def title(text: str) -> str:
         return Ansi.colorize(text, Ansi.CYAN, bold=True)
 
+    # 勾/叉符号刻意选用 GBK 也能编码的字符（√ / ×），
+    # 否则 Windows 控制台（cp936）里 print 会抛 UnicodeEncodeError。
     @staticmethod
     def success(text: str) -> str:
-        return Ansi.colorize(f"✓ {text}", Ansi.GREEN)
+        return Ansi.colorize(f"√ {text}", Ansi.GREEN)
 
     @staticmethod
     def error(text: str) -> str:
-        return Ansi.colorize(f"✗ {text}", Ansi.RED)
+        return Ansi.colorize(f"× {text}", Ansi.RED)
 
     @staticmethod
     def prompt(text: str) -> str:
@@ -43,8 +47,6 @@ class Ansi:
     def dim(text: str) -> str:
         return Ansi.colorize(text, Ansi.GRAY)
 
-
-# ── 配置管理 ─────────────────────────────────────────────────
 
 INSTRUMENT_BLOCK_MAP: Dict[int, str] = {
     0: "minecraft:dirt",
@@ -134,9 +136,6 @@ TEXT_TOWARDS_YAW = {
     "west": 180
 }
 
-SUPPORT_BLOCK = "minecraft:white_wool"
-CONNECTION_BLOCK = "minecraft:white_wool"
+# 小军鼓（乐器 3）下方再垫一格的支撑方块
 FALLING_BLOCK_SUPPORT = "minecraft:white_wool"
-
-# ── 歌词处理 ─────────────────────────────────────────────────
 

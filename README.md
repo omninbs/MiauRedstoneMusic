@@ -66,8 +66,8 @@ For source songs, the online NBS site [webnbs.com](https://webnbs.com) can be us
 | **Output** | `.schem` structure (`mcschematic.Version.JE_1_21`) |
 | **Interface** | Interactive terminal menu |
 | **Target** | Minecraft Java Edition 1.21.11 |
-| **Optional** | Particle-based lyrics via MiauParticleEffects |
-| **Config** | `nbs_chain_config.json` in the working directory |
+| **Optional** | Particle lyrics and bouncing-ball effects via MiauParticleEffects |
+| **Config** | In-memory only — nothing is read from or written to disk |
 
 ---
 
@@ -84,9 +84,10 @@ For source songs, the online NBS site [webnbs.com](https://webnbs.com) can be us
 | **Master group** | Choose a core group for non-flat layouts. |
 | **Staircase modes** | Per-group default or descending staircase generation. |
 | **Timing engine** | Repeater and support blocks represent timing gaps and signal paths. |
+| **Repeater modes** | Uniform: one repeater per blank tick, easiest to read. Compact: four blank ticks folded into one `delay=4` repeater, shorter structure (default). Both modes share the same timing; lyrics and particle effects follow the actual layout. |
 | **Modern instruments** | Maps NBS instruments to note-block under-blocks, including copper and waxed copper stages. |
-| **Light mode** | Optional redstone lamps in place of the default white-wool support mode. |
-| **Lyric track** | Optional command-block chain that calls `/mpe text` from MiauParticleEffects. |
+| **Lyric subtitles** | Optional single `/mpe text chain` command (one impulse command block) driving particle subtitles. |
+| **Particle effects** | Optional `/mpe noteblock chain` bouncing-ball command block per group. |
 
 ---
 
@@ -187,7 +188,7 @@ python -m miaunoteblock
 | 1 | Enter the path to an `.nbs` file (default prompt: `song.nbs`). |
 | 2 | Choose whether to vertically compress and reorder tracks by instrument. |
 | 3 | Review the detected song metadata and virtual layers. |
-| 4 | Configure direction, grouping, layout, stereo tracks, repeater timing, staircase modes, and optional lyrics. |
+| 4 | Configure grouping, layout, stereo tracks, repeater timing, staircase modes, lyric subtitles, and particle effects (menus `[1]`–`[7]`). |
 | 5 | Press Enter from the menu to generate the structure. |
 | 6 | Enter the output path, or accept `./redstone_music.schem`. |
 
@@ -195,28 +196,32 @@ The generated file can be loaded with a compatible Minecraft structure workflow,
 
 ---
 
-## Lyric Command Blocks
+## Lyric Subtitles (`/mpe text chain`)
 
-Generate a synchronous lyric track that renders through particles.
+Generate a synchronous lyric subtitle track that renders through particles. A whole song needs only **one impulse command block plus one command** — no repeater lyric chain inside the structure.
 
-1. Import a lyric JSON exported by the lyric editor (menu `[9]`); importing a lyric file is what enables the lyric feature, and the same menu can clear it.
-2. Configure color, scale, duration, enter time, exit time, vertical offset, side offset, and the command-block chain height (menu `[8]`).
-3. Optionally enable streaming lyrics while importing: consecutive characters whose gap stays within the configured seconds accumulate into one growing line (`A -> AB -> ABC`) instead of replacing each other.
-4. Generate the `.schem` file.
+1. Import a lyric JSON exported by the lyric editor (menu `[5] → [1]`); importing a lyric file is what enables the feature, and the same menu can clear it.
+2. Adjust color, scale, timing, animation, position and streaming merge in `[5] → [3]`: `[2]` timing, `[3]` enter animation, `[4]` exit animation (both chosen by number), `[5]` position (lead distance / height / side offset / random range / follow / command-block layer), `[6]` streaming merge.
+3. Generate the `.schem` file.
 
-Each command block calls:
+Generated commands look like:
 
 ```text
-/mpe text "lyric segment" ~ ~ ~ color=white scale=10.0 force=true duration=20 enter=5 exit=5 towards=-90,0,0
+/mpe text chain ~~~ 178,5,0,2,20,起风了|180,5,0,22,20,第二_句 color=white scale=10 enter=5 exit=5 towards=0,0,0 fade=both force=true in=typewriter:left
 ```
 
-Display coordinates are written as `~~~` offsets relative to each command block, so the text stays in place no matter where the structure is pasted. `scale=` is customizable (default `10.0`), and `force=true` is always emitted.
+- The anchor is always `~~~` (the command block's own position); per-segment `x,y,z` are offsets from it, so copying or moving the structure needs no data changes.
+- `start` is an absolute tick offset from the moment the command block runs (20 ticks = 1 second). The command block's own 1-tick execution delay is already included, and the value is aligned with the music chain's timing origin.
+- **Lead distance**: the text X coordinate equals the currently powered position plus `lead distance` (default 16 blocks). The structure always extends along **+X**, so the text stays ahead of the action instead of sticking to the camera. The powered position is looked up from the **real chain layout**: with merged repeaters the chain is shorter and the text follows that compressed layout, so both repeater modes stay aligned.
+- **Random jitter**: optional ± range for X/Y/Z (`[5] → random range`, 0 = off), drawn per segment in 0.5-block steps.
+- Spaces are written as `_`; `|`, `;`, and `,` inside the text are replaced with full-width characters so the command cannot be split incorrectly.
+- Commands longer than roughly 32000 characters are split into several impulse command blocks, each with a unique `id=`.
+- Enter/exit animations are picked by number from `typewriter` / `wipe` / `slide` / `scale` / `zoom` / `flip` / `rotate` / `scatter` / `bounce` / `drop` / `spacing` / `clarity`; leaving the exit animation empty makes the mod mirror the enter animation. With streaming merge enabled, consecutive text is merged into one line and the per-segment `enter=` spreads the typing over half of the span.
+- The structure always extends along +X, so `towards=` is fixed at `0,0,0` (facing the audience on the −X side).
 
-`towards=` is derived from the track direction so the text always faces the track origin side: north `-90`, south `90`, east `0`, west `180`.
+The bouncing-ball effect uses a separate `/mpe noteblock chain` command; pick the participating tracks in menu `[6]`, with detailed parameters in its advanced submenu.
 
-With streaming lyrics enabled, every display point first clears the previous text, then shows the accumulated string from a chain command block placed directly below the event cell.
-
-MiauParticleEffects provides the `/mpe text` entry point and renders the text as particle-based display content. See [mpe_docs.md](mpe_docs.md) for the documented mod environment and command options.
+MiauParticleEffects provides the `/mpe` entry point and renders text as particle-based display content. See [mpe_docs.md](mpe_docs.md) for the documented mod environment and command options.
 
 ---
 
@@ -226,7 +231,7 @@ MiauParticleEffects provides the `/mpe text` entry point and renders the text as
 | :-- | :-- |
 | `miau_redstone_music.py` | Interactive entry point. |
 | `pm.bat` | Windows launcher for the entry point. |
-| `miaunoteblock/` | Python package holding the generator logic. `app.py` contains the interactive flow and `main()`; `constants.py`, `config.py`, `lyrics.py`, `instruments.py`, `layout.py`, and `generation.py` hold the reusable modules. |
+| `miaunoteblock/` | Python package holding the generator logic. `app.py` contains the interactive flow and `main()`; `constants.py`, `config.py`, `console.py`, `lyrics.py`, `particles.py`, `instruments.py`, `layout.py`, and `generation.py` hold the reusable modules. |
 | `mpe_docs.md` | MiauParticleEffects command and environment notes. |
 | `Readme_CN.md` | Chinese documentation. |
 | `LICENSE` | Apache License 2.0. |
@@ -261,7 +266,7 @@ A flat, single-object mark with a limited palette works best: it stays legible a
 > **Limitations**
 > - Large songs, dense chords, small particle density, or many simultaneous effects may require substantial Minecraft performance headroom.
 > - The tool currently generates `.schem` structures only; it does not export a standalone command text file or another structure format.
-> - The tool is interactive and writes configuration beside the current working directory rather than using a documented global configuration path.
+> - The tool is interactive and keeps configuration in memory only: settings reset to defaults when the process exits, and no configuration file is read or written.
 > - The repository does not currently provide official release binaries, screenshots, or a verified download URL.
 
 ---

@@ -11,9 +11,6 @@ dist/
 venv/
 env/
 
-# Tool configuration written to the working directory
-nbs_chain_config.json
-
 # Generated structures
 *.schem
 

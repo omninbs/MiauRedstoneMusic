@@ -99,51 +99,48 @@ def find_structure_bottom(commands) -> int:
     return 0 if min_y is None else min_y
 
 
-# ── 乐器识别 ─────────────────────────────────────────────────
+def chain_valid_ticks(virtual_layers: List[Dict], max_tick: int) -> List[int]:
+    """主音乐链实际使用的 tick 列表（与 :func:`build_all_commands_virtual` 一致）。"""
+    ticks = sorted({note.tick for layer in virtual_layers
+                    for note in layer.get("notes", []) if 0 <= note.tick <= max_tick})
+    if max_tick not in ticks:
+        # 所有音符 tick 都 ≤ max_tick，直接追加即可保持有序
+        ticks.append(max_tick)
+    return ticks
 
-def generate_fill_commands(
-    groups: List[int],
-    group_offsets: List[Tuple[int, int]],
-    base: Tuple[int, int, int],
-    direction: str,
-    max_tick: int,
-    side_axis: str,
-    use_lamp: bool = False
-) -> List[str]:
-    dx, dy, dz = DIR_OFFSET[direction]
-    base_x, base_y, base_z = base
-    fill_cmds = []
-    for i, gid in enumerate(groups):
-        y_off, side_off = group_offsets[i]
-        if side_axis == 'z':
-            line_z = base_z + side_off
-            line_x0 = base_x
-        else:
-            line_z = base_z
-            line_x0 = base_x + side_off
 
-        start_x = line_x0
-        end_x = start_x + dx * (max_tick + 2)
-        if dx > 0:
-            min_x, max_x = min(start_x, end_x), max(start_x, end_x)
-        else:
-            min_x, max_x = min(start_x, end_x), max(start_x, end_x)
+def event_offsets(valid_ticks: List[int],
+                  uniform_repeater_mode: bool = False) -> List[Tuple[int, int]]:
+    """每个事件格相对链起点的链轴格偏移：``[(tick, 格数), ...]``。
 
-        cur = min_x
-        while cur <= max_x:
-            seg_end = min(cur + abs(dx) * 31, max_x)
-            x1, x2 = (cur, seg_end) if dx > 0 else (seg_end, cur)
-            fill_cmds.append(
-                f"fill {x1} {base_y + y_off} {line_z} {x2} {base_y + y_off} {line_z} minecraft:white_wool"
-            )
-            if use_lamp:
-                fill_cmds.append(
-                    f"fill {x1} {base_y + y_off} {line_z} {x2} {base_y + y_off} {line_z} minecraft:redstone_lamp"
-                )
-            cur = seg_end + abs(dx)
-    return fill_cmds
+    必须与 :func:`build_all_commands_virtual` 的布局保持一致：
+    - 每个事件格占 1 格，其后紧跟一个 delay=1 中继器（1 格）；
+    - 空白 tick 用 [羊毛 + 中继器] 对填充：
+      均匀模式下每个空白 tick 一对（2 格），
+      合并模式下最多 4 个空白 tick 并进一个 delay=4 中继器（仍占 2 格）。
+    因此「合并模式」的链条明显更短，调用方不能再假设「每 tick 2 格」。
+    """
+    if not valid_ticks:
+        return []
+    result: List[Tuple[int, int]] = [(valid_ticks[0], 0)]
+    cursor = 0
+    previous = valid_ticks[0]
+    for tick in valid_ticks[1:]:
+        blank = max(0, tick - previous - 1)
+        pairs = blank if uniform_repeater_mode else -(-blank // 4)
+        cursor += 2 + 2 * pairs
+        result.append((tick, cursor))
+        previous = tick
+    return result
 
-def generate_schematic_from_commands(commands, output_path, base_name="redstone_music"):
+
+# ── .schem 结构保存 ──────────────────────────────────────────
+
+SETBLOCK_PATTERN = re.compile(r'^setblock\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(.+)')
+FILL_PATTERN = re.compile(r'^fill\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(.+)')
+
+
+def generate_schematic_from_commands(commands, output_path):
     # 生成前统一检查命令方块文本长度，超限时给出警告
     warn_oversized_commands(commands)
     schem = mcschematic.MCSchematic()
@@ -164,16 +161,12 @@ def generate_schematic_from_commands(commands, output_path, base_name="redstone_
         schem.setBlock((x, y, z), block_str)
         update_bounds(x, y, z)
 
-    import re
-    setblock_pattern = re.compile(r'^setblock\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(.+)')
-    fill_pattern = re.compile(r'^fill\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(.+)')
-    
     for cmd in commands:
         cmd = cmd.strip()
         if cmd.startswith('#') or not cmd:
             continue
 
-        m = setblock_pattern.match(cmd)
+        m = SETBLOCK_PATTERN.match(cmd)
         if m:
             x, y, z = int(m.group(1)), int(m.group(2)), int(m.group(3))
             block = m.group(4)
@@ -181,7 +174,7 @@ def generate_schematic_from_commands(commands, output_path, base_name="redstone_
             total_blocks += 1
             continue
 
-        m = fill_pattern.match(cmd)
+        m = FILL_PATTERN.match(cmd)
         if m:
             x1, y1, z1 = int(m.group(1)), int(m.group(2)), int(m.group(3))
             x2, y2, z2 = int(m.group(4)), int(m.group(5)), int(m.group(6))
@@ -204,7 +197,6 @@ def generate_schematic_from_commands(commands, output_path, base_name="redstone_
     print(Ansi.info(f"结构文件包含 {total_blocks} 个方块，范围: X{min_x}~{max_x}, Y{min_y}~{max_y}, Z{min_z}~{max_z}"))
     print(Ansi.dim(f"放置时建议使用 //schem load 后，以世界坐标 ({offset_x},{offset_y},{offset_z}) 为原点粘贴"))
 
-    import os
     dir_name = os.path.dirname(output_path)
     base_name = os.path.basename(output_path)
     if base_name.endswith('.schem'):
@@ -252,17 +244,15 @@ def build_all_commands_virtual(
         note_events = []
     group_tick_notes = defaultdict(lambda: defaultdict(list))
     for vlayer in virtual_layers:
-        gid = layer_to_group[vlayer['vid']]
+        gid = layer_to_group.get(vlayer['vid'])
+        if gid is None:
+            # 未参与分组的音轨直接跳过，避免 KeyError 中断生成
+            continue
         for note in vlayer['notes']:
             if 0 <= note.tick <= max_tick:
                 group_tick_notes[gid][note.tick].append((note, vlayer['vid']))
 
-    valid_ticks = set()
-    for gid in groups:
-        valid_ticks.update(group_tick_notes[gid].keys())
-    valid_ticks = sorted(valid_ticks)
-    if max_tick not in valid_ticks:
-        valid_ticks.append(max_tick)
+    valid_ticks = chain_valid_ticks(virtual_layers, max_tick)
 
     base_x, base_y, base_z = base
     activation_positions = {}
@@ -282,14 +272,11 @@ def build_all_commands_virtual(
 
         relay_x = x0 - dx
         relay_y = y0
-        if side_axis == 'z':
-            relay_z = z0 - dz
-        else:
-            relay_z = z0 - dz if direction in ("south", "north") else z0
+        relay_z = z0 - dz
 
         input_x = relay_x - dx
         input_y = relay_y
-        input_z = relay_z - dz if direction in ("south", "north") else relay_z
+        input_z = relay_z - dz
         activation_positions[gid] = (input_x, input_y, input_z)
 
         group_pos[gid] = (relay_x, relay_y, relay_z)
@@ -302,6 +289,7 @@ def build_all_commands_virtual(
 
     all_cmds = ["# 红石音乐生成器 (中继器链 + 辅助方块)"]
     SEGMENT = 32
+    dropped_notes = 0
 
     def get_fixed_and_y(gid):
         i = groups.index(gid)
@@ -396,10 +384,7 @@ def build_all_commands_virtual(
 
             if note_count == 0:
                 # 空 tick：放置 base_block（中继器直接充能该方块）
-                if axis_key == 'x':
-                    all_cmds.append(f"setblock {note_x} {y} {note_z} {base_block}")
-                else:
-                    all_cmds.append(f"setblock {note_x} {y} {note_z} {base_block}")
+                all_cmds.append(f"setblock {note_x} {y} {note_z} {base_block}")
                 # 然后放置后续中继器（延续信号）
                 next_relay_x = note_x + dx
                 next_relay_z = note_z + dz if side_axis == 'z' else note_z
@@ -410,20 +395,12 @@ def build_all_commands_virtual(
                 note, vid = notes[0]
                 pitch = note_to_pitch(get_note_key(note))
                 inst = note.instrument
-                if axis_key == 'x':
-                    all_cmds.append(f"setblock {note_x} {y} {note_z} minecraft:note_block[note={pitch}]")
-                else:
-                    all_cmds.append(f"setblock {note_x} {y} {note_z} minecraft:note_block[note={pitch}]")
+                all_cmds.append(f"setblock {note_x} {y} {note_z} minecraft:note_block[note={pitch}]")
                 note_events.append((gid, vid, valid_tick, note_x, y, note_z))
                 if inst != 0:
-                    if axis_key == 'x':
-                        all_cmds.append(f"setblock {note_x} {y-1} {note_z} {INSTRUMENT_BLOCK_MAP.get(inst, 'minecraft:stone')}")
-                        if inst == 3:
-                            all_cmds.append(f"setblock {note_x} {y-2} {note_z} {FALLING_BLOCK_SUPPORT}")
-                    else:
-                        all_cmds.append(f"setblock {note_x} {y-1} {note_z} {INSTRUMENT_BLOCK_MAP.get(inst, 'minecraft:stone')}")
-                        if inst == 3:
-                            all_cmds.append(f"setblock {note_x} {y-2} {note_z} {FALLING_BLOCK_SUPPORT}")
+                    all_cmds.append(f"setblock {note_x} {y-1} {note_z} {INSTRUMENT_BLOCK_MAP.get(inst, 'minecraft:stone')}")
+                    if inst == 3:
+                        all_cmds.append(f"setblock {note_x} {y-2} {note_z} {FALLING_BLOCK_SUPPORT}")
                 # 放置后续中继器
                 next_relay_x = note_x + dx
                 next_relay_z = note_z + dz if side_axis == 'z' else note_z
@@ -440,10 +417,7 @@ def build_all_commands_virtual(
                     left_pos = (note_x - side_step, side_y, note_z)
                     right_pos = (note_x + side_step, side_y, note_z)
                 sorted_notes = sorted(notes, key=lambda nv: nv[0].layer)
-                if axis_key == 'x':
-                    all_cmds.append(f"setblock {note_x} {y} {note_z} {base_block}")
-                else:
-                    all_cmds.append(f"setblock {note_x} {y} {note_z} {base_block}")
+                all_cmds.append(f"setblock {note_x} {y} {note_z} {base_block}")
                 for pos, (note, vid) in zip([left_pos, right_pos], sorted_notes):
                     px, py, pz = pos
                     pitch = note_to_pitch(get_note_key(note))
@@ -460,6 +434,9 @@ def build_all_commands_virtual(
                 all_cmds.append(f"setblock {next_relay_x} {y} {next_relay_z} minecraft:repeater[facing={facing},delay=1]")
                 group_pos[gid] = (next_relay_x, y, next_relay_z)
             else:  # >=3
+                if note_count > 3:
+                    # 一个事件格最多摆 3 个音符盒，多余的会被丢弃（生成结束后统一提示）
+                    dropped_notes += note_count - 3
                 sorted_pairs = sorted(notes, key=lambda nv: nv[0].layer)
                 mid_pair = sorted_pairs[1] if len(sorted_pairs) > 1 else sorted_pairs[0]
                 mid_note, mid_vid = mid_pair
@@ -499,6 +476,10 @@ def build_all_commands_virtual(
 
         prev_valid_tick = valid_tick
 
+    if dropped_notes:
+        print(Ansi.prompt(f"提示：有 {dropped_notes} 个音符与同一 tick 的其它音符挤在一格，"
+                          f"已跳过（一个事件格最多放 3 个音符盒）。"
+                          f"可以改用「垂直压缩」或把音轨拆到不同分组。"))
     return all_cmds, activation_positions
 
 # ── 歌词轨道特殊处理 ─────────────────────────────────────────

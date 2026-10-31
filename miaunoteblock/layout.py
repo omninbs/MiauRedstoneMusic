@@ -17,25 +17,6 @@ def calc_nest_layers(num_groups: int, max_radius: int, layer_gap: int = 4, min_s
             break
     return max(1, max_layers)
 
-def distribute_groups_to_layers(num_groups: int, max_radius: int, num_layers: int,
-                                layer_gap: int = 4, min_spacing: int = 4) -> List[Tuple[int, int]]:
-    layers = []
-    r = max_radius
-    for _ in range(num_layers):
-        capacity = int(2 * math.pi * r / min_spacing)
-        layers.append([r, 0, capacity])
-        r -= layer_gap
-    remaining = num_groups
-    for layer in layers:
-        if remaining <= 0:
-            break
-        alloc = min(layer[2], remaining)
-        layer[1] = alloc
-        remaining -= alloc
-    if remaining > 0:
-        layers[-1][1] += remaining
-    return [(r, cnt) for r, cnt, _ in layers]
-# ── 最小半径与嵌套辅助 ───────────────────────────────
 def compute_min_radius(num_groups: int, style: str, has_master: bool = False) -> int:
     n = num_groups if not has_master else num_groups - 1
     if n <= 1:
@@ -263,6 +244,9 @@ def compute_offsets(
                     seen.add(pt)
                     unique.append(pt)
             unique = unique[:cnt]
+            if len(unique) < cnt:
+                # 半径小、组数多时采样点不够，循环复用避免索引越界
+                unique += [unique[i % len(unique)] for i in range(cnt - len(unique))]
             for i in range(cnt):
                 y, side = unique[i]
                 gid = remaining_groups[idx]
@@ -300,6 +284,9 @@ def compute_offsets(
             left = [(radius - i * side_len // (per_side - 1), -radius) for i in range(per_side)] if per_side > 1 else [(0,-radius)]
             points = top + right + bottom + left
             points = points[:n]
+            if len(points) < n:
+                # 组数多于采样点时补齐，避免索引越界
+                points += [points[i % len(points)] for i in range(n - len(points))]
             if has_master:
                 pos_dict[master] = (0, 0)
                 idx = 0
@@ -339,13 +326,16 @@ def compute_offsets(
                 pos_dict[gid] = (0, 0)
         else:
             side_len = 2 * radius
-            num_top = max(1, n // 2)
-            num_side = max(1, (n - num_top) // 2)
+            num_top = max(1, (n + 1) // 2)
+            num_side = max(1, (n - num_top + 1) // 2)
             left_side = [(-radius, -radius + i * side_len // (num_side - 1)) for i in range(num_side)] if num_side > 1 else [(-radius,0)]
             top = [(-radius + i * side_len // (num_top - 1), radius) for i in range(num_top)] if num_top > 1 else [(0,radius)]
             right_side = [(radius, radius - i * side_len // (num_side - 1)) for i in range(num_side)] if num_side > 1 else [(radius,0)]
             points = left_side + top + right_side
             points = points[:n]
+            if len(points) < n:
+                # 组数多于采样点时补齐，避免索引越界
+                points += [points[i % len(points)] for i in range(n - len(points))]
             if has_master:
                 pos_dict[master] = (0, 0)
                 idx = 0

@@ -3,36 +3,43 @@
 不依赖 pytest，直接 `python tests/test_chain_output.py` 运行。
 
 覆盖内容：
-1. 歌词命令方块链的结构与红石计时（四个方向、跟随/固定模式、均匀/合并中继器）。
-2. 命令方块链的纵向位置：默认应位于「整个结构最低方块」下方，且与音乐链不重叠。
-3. 启动点（红石块）与起手中继器的相对位置。
-4. /mpe text 显示坐标以 ~~~ 相对偏移写入（加上命令方块自身位置 = 内部锚点），与命令方块链高度无关，结构移动后仍正确。
-5. 流式歌词：累积文字、按间隔/长度切段，以及「清除 + 显示」两个命令方块的关系。
-6. 编辑器 v2 歌词模板（数组格式）解析与 lane 过滤。
-7. 顺序系统音色合并（按音轨顺序、相邻同音色、每组最多 3 条）。
-8. 歌词晚于歌曲结尾时不被截断，歌词链自动延伸到覆盖最后一条歌词。
+1. `/mpe text chain` 命令结构：单个脉冲命令方块、`~~~` 锚点、段字段完整。
+2. 时间对齐：`start = 2×(tick − origin)` + 启动链补偿，与主音乐链同一计时基准。
+3. 文字坐标：相对偏移 + 命令方块位置 = 期望的文字锚点（跟随 / 固定）。
+4. 文字清洗：空格写 `_`，`|` `;` `,` 换成全角，换行丢弃。
+5. 流式合并：连续文字累积成一句 + 段内覆盖入场时长。
+6. 保持距离（文字 = 激活中继器位置 + lead）、XYZ 随机抖动与入场/出场动画选项。
+7. 命令方块位置：结构最低方块下方，且不与音乐链坐标重叠。
+8. 超长命令分批：多条命令各带唯一 id，长度都在上限内。
+9. 编辑器 v2 歌词模板解析与 lane 过滤。
+10. 顺序系统音色合并（按音轨顺序、相邻同音色、每组最多 3 条）。
+11. 歌词晚于歌曲结尾时不被截断。
+12. Windows GBK 控制台不会因输出符号崩溃。
 """
 
 import json
 import os
+import random
 import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from miaunoteblock.constants import DIR_OFFSET, OPPOSITE_FACING, SIDE_AXIS
+from miaunoteblock.constants import Ansi, DIR_OFFSET, SIDE_AXIS, TEXT_TOWARDS_YAW
 from miaunoteblock.layout import compute_offsets
 from miaunoteblock.generation import (
     build_all_commands_virtual,
+    chain_valid_ticks,
+    event_offsets,
     find_structure_bottom,
-    split_to_repeaters,
 )
 from miaunoteblock.instruments import auto_group_by_mode_on_layers
 from miaunoteblock.lyrics import (
-    build_lyrics_commands,
-    build_lyrics_track,
-    build_stream_mapping,
+    MAX_CHAIN_COMMAND_LEN,
+    build_display_segments,
+    build_lyrics_chain,
     load_lyrics_json,
+    sanitize_text,
     stream_threshold_ticks,
 )
 
@@ -52,16 +59,14 @@ class FakeNote:
 
 
 def make_layers():
-    """两个音乐组 + 一个歌词轨道（歌词轨道并入组 0）。"""
+    """两个音乐组：layer0/layer1 各成一组。"""
     layer0 = [FakeNote(t, layer=0) for t in (0, 5, 10, 20, 30)]
     layer1 = [FakeNote(t, layer=1, key=50) for t in (0, 3, 30)]
-    layer2 = [FakeNote(t, layer=2, key=60) for t in (0, 5, 10, 20, 30)]  # 歌词轨道
     virtual_layers = [
         {"vid": 0, "original_id": 0, "side": None, "notes": layer0, "inst": 0, "cat": "钢琴"},
         {"vid": 1, "original_id": 1, "side": None, "notes": layer1, "inst": 0, "cat": "钢琴"},
-        {"vid": 2, "original_id": 2, "side": None, "notes": layer2, "inst": 0, "cat": "钢琴"},
     ]
-    layer_to_group = {0: 0, 1: 1, 2: 0}
+    layer_to_group = {0: 0, 1: 1}
     return virtual_layers, layer_to_group
 
 
@@ -71,127 +76,131 @@ def base_config():
         "flat_spacing": 3,
         "master_group": None,
         "lyrics_color": "white",
-        "lyrics_scale": 1.0,
+        "lyrics_scale": 10.0,
         "lyrics_duration": 20,
         "lyrics_enter": 5,
         "lyrics_exit": 5,
+        "lyrics_anim_in": "typewriter:left",
+        "lyrics_anim_out": "",
         "lyrics_y_offset": 5,
-        "lyrics_side_offset": 0,
+        "lyrics_side_offset": None,
+        "lyrics_lead_distance": 16,
+        "lyrics_jitter_x": 0.0,
+        "lyrics_jitter_y": 0.0,
+        "lyrics_jitter_z": 0.0,
         "lyrics_follow": True,
         "lyrics_chain_y_offset": 1,
+        "lyrics_stream": False,
+        "lyrics_stream_seconds": 2.0,
+        "lyrics_stream_max_len": 18,
+        "lyrics_import": [],
     }
 
 
-def plain_map(ticks, prefix="L"):
-    """构造非流式映射（每条文字独立显示）。"""
-    return [{"tick": t, "text": f"{prefix}{t}", "duration": 0,
-             "enter": 5, "exit": 5, "clear": False} for t in ticks]
+START = (100, 64, 200)
 
 
-# ── 解析与模拟工具 ────────────────────────────────────────────
+def make_world(direction="east", lyric_ticks=(0, 5, 10, 20, 30), follow=True,
+               stream=False, texts=None, duration=0, max_tick=30, rng=None,
+               **overrides):
+    """生成音乐链 + 歌词链，返回所有中间结果。"""
+    virtual_layers, layer_to_group = make_layers()
+    config = base_config()
+    config.update({"lyrics_follow": follow, "lyrics_stream": stream})
+    config.update(overrides)
+    if texts is None:
+        texts = [f"L{tick}" for tick in lyric_ticks]
+    config["lyrics_import"] = [
+        {"tick": tick, "text": text, "duration": duration}
+        for tick, text in zip(lyric_ticks, texts)
+    ]
+
+    groups = sorted(set(layer_to_group.values()))
+    offsets = compute_offsets(groups, config, len(groups))
+    group_offset_dict = {gid: offsets[index] for index, gid in enumerate(groups)}
+
+    music_cmds, activation_positions = build_all_commands_virtual(
+        virtual_layers, layer_to_group, [group_offset_dict[gid] for gid in groups],
+        START, direction, max_tick, group_staircase_modes={},
+    )
+    bottom = find_structure_bottom(music_cmds)
+    result = build_lyrics_chain(
+        virtual_layers, group_offset_dict, START, direction, max_tick, config,
+        struct_bottom_y=bottom, tempo=13, rng=rng,
+    )
+    return {
+        "config": config,
+        "result": result,
+        "bottom": bottom,
+        "music": music_cmds,
+        "offsets": group_offset_dict,
+        "activation": activation_positions,
+        "virtual_layers": virtual_layers,
+    }
+
+
+# ── 解析工具 ──────────────────────────────────────────────────
 
 SETBLOCK_RE = re.compile(r"^setblock\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(.+)$")
+COMMAND_TEXT_RE = re.compile(r'\{Command:("(?:[^"\\]|\\.)*")')
 DELAY_RE = re.compile(r"delay=(\d+)")
-CMD_RE = re.compile(r'\{Command:("(?:[^"\\]|\\.)*")')
-MPE_RE = re.compile(r'/mpe text "((?:[^"\\]|\\.)*)"\s+(~[+-]?\d*)\s+(~[+-]?\d*)\s+(~[+-]?\d*)\s+(.*)$')
+CHAIN_PREFIX = "/mpe text chain ~~~ "
 
 
-def parse_setblocks(cmds):
-    """{ (x,y,z): block } —— 只解析 setblock，后写覆盖先写。"""
-    blocks = {}
-    for cmd in cmds:
-        m = SETBLOCK_RE.match(cmd.strip())
-        if m:
-            key = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
-            blocks[key] = m.group(4)
+def parse_blocks(commands):
+    """[(坐标, 方块串), ...]（只解析 setblock）。"""
+    blocks = []
+    for command in commands:
+        match = SETBLOCK_RE.match(command.strip())
+        if match:
+            coord = (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+            blocks.append((coord, match.group(4)))
     return blocks
 
 
-def axis_key(direction):
-    return "x" if direction in ("east", "west") else "z"
+def block_commands(blocks):
+    """{坐标: 命令文本}，只保留带 Command: 的方块。"""
+    out = {}
+    for coord, block in blocks:
+        match = COMMAND_TEXT_RE.search(block)
+        if match:
+            out[coord] = json.loads(match.group(1))
+    return out
 
 
-def axis_coord(coord, key):
-    return coord[0] if key == "x" else coord[2]
+def chain_entries(commands):
+    """[(坐标, 方块串, 命令文本), ...]，只保留 /mpe text chain。"""
+    entries = []
+    for coord, block in parse_blocks(commands):
+        match = COMMAND_TEXT_RE.search(block)
+        if not match:
+            continue
+        text = json.loads(match.group(1))
+        if text.startswith(CHAIN_PREFIX):
+            entries.append((coord, block, text))
+    return entries
 
 
-def simulate_layer(blocks, layer_y, key, step):
-    """沿链轴模拟红石传播，返回 (各位置受电时间, 错误信息)。
+def parse_segments(command):
+    """把 /mpe text chain 拆成 (段列表, 选项列表)。"""
+    rest = command[len(CHAIN_PREFIX):]
+    tokens = rest.split(" ")
+    blob, options = tokens[0], tokens[1:]
+    segments = []
+    for raw in blob.split("|"):
+        body, *extra = raw.split(";")
+        fields = body.split(",")
+        segments.append({
+            "x": float(fields[0]),
+            "y": float(fields[1]),
+            "z": float(fields[2]),
+            "start": int(fields[3]),
+            "duration": int(fields[4]),
+            "text": ",".join(fields[5:]),
+            "opts": extra,
+        })
+    return segments, options
 
-    模型：起手中继器由红石块输入供电（t=0），中继器每经过一个 +delay，
-    普通方块（命令方块/羊毛）记录当前时间并即时把强充能传给下一个中继器。
-    相邻方块在链轴上必须相差 1 格，否则视为断链。
-    """
-    items = [c for c in blocks.items() if c[0][1] == layer_y]
-    items.sort(key=lambda it: axis_coord(it[0], key), reverse=(step < 0))
-    power = 0
-    times = {}
-    prev = None
-    for coord, block in items:
-        c = axis_coord(coord, key)
-        if prev is not None and abs(c - prev) != 1:
-            return None, f"断链：链轴坐标 {prev} -> {c}（间隔 {abs(c - prev)}）"
-        if "repeater" in block:
-            m = DELAY_RE.search(block)
-            power += int(m.group(1)) if m else 1
-        else:
-            times[c] = power
-        prev = c
-    return times, None
-
-
-def expected_event_offsets(valid_ticks, uniform):
-    """按实际布局推算每个事件格相对 base 的链轴偏移（格）。"""
-    offsets = []
-    cursor = 0
-    prev = None
-    for tick in valid_ticks:
-        if prev is not None:
-            blank = max(0, tick - prev - 1)
-            delays = [1] * blank if uniform else split_to_repeaters(blank)
-            cursor += 2 + 2 * len(delays)
-        offsets.append((tick, cursor))
-        prev = tick
-    return offsets
-
-
-def parse_rel(s: str) -> int:
-    """~ / ~5 / ~-5 / ~+5 → 0 / 5 / -5 / 5"""
-    if s == "~":
-        return 0
-    return int(s[1:])
-
-
-def extract_mpe(block):
-    """从命令方块 block 串中提取 /mpe 命令并解析出 (text, rel_x, rel_y, rel_z, options)。
-
-    返回的坐标为 ~~~ 相对偏移（整数），需加上命令方块自身位置才是绝对显示坐标。
-    """
-    m = CMD_RE.search(block)
-    if not m:
-        return None
-    cmd = json.loads(m.group(1))
-    mm = MPE_RE.match(cmd)
-    if not mm:
-        return None
-    text = json.loads('"' + mm.group(1) + '"')
-    return text, parse_rel(mm.group(2)), parse_rel(mm.group(3)), parse_rel(mm.group(4)), mm.group(5)
-
-
-def extract_mpe_abs(block, block_coord):
-    """提取 /mpe 命令并返回 (text, abs_x, abs_y, abs_z, options)。
-
-    将 ~~~ 相对偏移加上命令方块自身位置，得到绝对显示坐标。
-    """
-    parsed = extract_mpe(block)
-    if not parsed:
-        return None
-    text, rel_x, rel_y, rel_z, opts = parsed
-    bx, by, bz = block_coord
-    return text, bx + rel_x, by + rel_y, bz + rel_z, opts
-
-
-# ── 断言容器 ──────────────────────────────────────────────────
 
 class Checks:
     def __init__(self):
@@ -207,369 +216,444 @@ class Checks:
     def report(self, name):
         status = "OK" if not self.failed else "FAIL"
         print(f"  [{name}] {status}  通过断言 {self.passed} 条")
-        for f in self.failed:
-            print(f"      ✗ {f}")
+        for message in self.failed:
+            print(f"      × {message}")
         return not self.failed
 
 
-# ── 测试 1：歌词链计时（四方向）───────────────────────────────
+# ── 测试 1：命令结构 ─────────────────────────────────────────
 
-def test_lyrics_timing_all_directions():
-    print("测试 1：歌词链结构与计时（四个方向，跟随模式）")
-    virtual_layers, layer_to_group = make_layers()
-    lyrics_notes = sorted(
-        [n for vl in virtual_layers for n in vl["notes"] if n.layer == 2],
-        key=lambda n: n.tick,
-    )
-    mapping = plain_map((0, 5, 10, 20, 30))
-    max_tick, origin = 30, 0
-    valid_ticks = sorted({n.tick for n in lyrics_notes} | {origin, max_tick})
+def test_command_shape():
+    print("测试 1：/mpe text chain 命令结构与脉冲命令方块")
+    chk = Checks()
+    world = make_world()
+    result = world["result"]
+    chk.ok(result is not None, "歌词链未生成")
+    if not result:
+        return chk.report("shape")
 
+    chk.ok(result["batches"] == 1, f"短歌词应只有 1 批，实际 {result['batches']}")
+    chk.ok(len(result["commands"]) == 1, f"命令数 {len(result['commands'])} != 1")
+    chk.ok(len(result["activations"]) == 1, f"激活点 {len(result['activations'])} != 1")
+
+    entries = chain_entries(result["commands"])
+    chk.ok(len(entries) == 1, f"识别到 {len(entries)} 条 /mpe text chain 命令")
+    if not entries:
+        return chk.report("shape")
+
+    coord, block, text = entries[0]
+    chk.ok("minecraft:command_block[facing=up]" in block, f"应为脉冲命令方块: {block[:70]}")
+    chk.ok("chain_command_block" not in block, "不应再使用链式命令方块")
+    chk.ok("~~~ " in text, "锚点必须是 ~~~")
+
+    segments, options = parse_segments(text)
+    chk.ok(len(segments) == 5, f"段数 {len(segments)} != 5")
+    chk.ok(all(segment["duration"] >= 1 for segment in segments), "duration 必须 ≥ 1")
+    chk.ok(all(segment["text"].startswith("L") for segment in segments),
+           f"文字内容错误: {[s['text'] for s in segments]}")
+    chk.ok(f"towards={TEXT_TOWARDS_YAW['east']},0,0" in options,
+           f"缺少朝向: {options}")
+    chk.ok("force=true" in options, f"缺少 force=true: {options}")
+    chk.ok(any(option.startswith("color=") for option in options), f"缺少 color: {options}")
+    chk.ok(any(option.startswith("scale=") for option in options), f"缺少 scale: {options}")
+
+    # 命令方块位于结构最低方块下方
+    chk.ok(coord[1] == world["bottom"] - 1,
+           f"命令方块 Y {coord[1]} != 结构底部下方 {world['bottom'] - 1}")
+    # 激活红石块紧邻命令方块（沿链轴 +1），下一 tick 触发
+    dx, _, dz = DIR_OFFSET["east"]
+    want = (coord[0] + dx, coord[1], coord[2] + dz)
+    chk.ok(result["activations"][0] == want,
+           f"激活点 {result['activations'][0]} != {want}")
+    return chk.report("shape")
+
+
+# ── 测试 2：时间对齐与坐标（四个方向）────────────────────────
+
+def test_timing_and_position():
+    print("测试 2：时间对齐与文字坐标（四个方向）")
+    lyric_ticks = (0, 5, 10, 20, 30)
     all_ok = True
     for direction in ("east", "west", "south", "north"):
         chk = Checks()
-        dx, _, dz = DIR_OFFSET[direction]
-        key = axis_key(direction)
-        step = dx if key == "x" else dz
+        world = make_world(direction=direction)
+        result = world["result"]
+        chk.ok(result is not None, "歌词链未生成")
+        if not result:
+            all_ok &= chk.report(direction)
+            continue
+
+        coord, _, text = chain_entries(result["commands"])[0]
+        segments, options = parse_segments(text)
         side_axis = SIDE_AXIS[direction]
-        base = (100, 64, 200)
-        chain_y = 40  # 人为放在结构下方
-        config = base_config()
-        anchor_side = base[2] + 0 if side_axis == "z" else base[0] + 0
-        anchor_y = base[1] + 5
+        dx, _, dz = DIR_OFFSET[direction]
+        step = dx if side_axis == "z" else dz
+        axis_start = START[0] if side_axis == "z" else START[2]
+        side_start = START[2] if side_axis == "z" else START[0]
+        # 平铺两组的侧向偏移（compute_offsets 会按组数居中）
+        sides = [offset[1] for offset in world["offsets"].values()]
+        side_want = side_start + (min(sides) + max(sides)) // 2
+        y_want = START[1] + 0 + world["config"]["lyrics_y_offset"]
 
-        cmds = build_lyrics_commands(
-            mapping, base, direction, max_tick, config,
-            anchor_side=anchor_side, anchor_chain=None, anchor_y=anchor_y,
-            origin_tick=origin, fixed_tick=None, chain_y=chain_y,
-        )
-        blocks = parse_setblocks(cmds)
+        lead = world["config"]["lyrics_lead_distance"]
+        layout = dict(event_offsets(
+            chain_valid_ticks(world["virtual_layers"], 30),
+            world["config"].get("uniform_repeater_mode", False)))
+        for segment, tick in zip(segments, lyric_ticks):
+            # 单批时启动链补偿 = 批数 + 1 = 2
+            chk.ok(segment["start"] == 2 * tick + 2,
+                   f"{direction} tick {tick} start={segment['start']} 应为 {2 * tick + 2}")
+            abs_x = coord[0] + segment["x"]
+            abs_y = coord[1] + segment["y"]
+            abs_z = coord[2] + segment["z"]
+            # 文字 = 当前激活位置（按真实链条布局）+ 保持距离
+            axis_want = axis_start + layout[tick] * step + lead * step
+            if side_axis == "z":
+                chk.ok(abs_x == axis_want, f"{direction} tick {tick} 链轴 x {abs_x} != {axis_want}")
+                chk.ok(abs_z == side_want, f"{direction} tick {tick} 侧向 z {abs_z} != {side_want}")
+            else:
+                chk.ok(abs_z == axis_want, f"{direction} tick {tick} 链轴 z {abs_z} != {axis_want}")
+                chk.ok(abs_x == side_want, f"{direction} tick {tick} 侧向 x {abs_x} != {side_want}")
+            chk.ok(abs_y == y_want, f"{direction} tick {tick} 高度 y {abs_y} != {y_want}")
 
-        # 1a. 链层所有方块都在 chain_y
-        chain_blocks = {c: b for c, b in blocks.items() if c[1] == chain_y}
-        chk.ok(len(chain_blocks) > 0, "链层没有方块")
-        chk.ok(all(c[1] == chain_y for c in chain_blocks), "存在非 chain_y 的链层方块")
-
-        # 1b. 无断链
-        times, err = simulate_layer(blocks, chain_y, key, step)
-        chk.ok(err is None, err or "")
-
-        # 1c. 事件格偏移正确
-        offsets = expected_event_offsets(valid_ticks, uniform=False)
-        base_axis = axis_coord(base, key)
-        for tick, off in offsets:
-            coord = base_axis + off * step
-            chk.ok(coord in times, f"tick {tick} 事件格缺失 (coord={coord})")
-
-        # 1d. 受电时间 = 1 + (tick - origin)
-        if times is not None:
-            for tick, off in offsets:
-                coord = base_axis + off * step
-                want = 1 + (tick - origin)
-                chk.ok(times.get(coord) == want,
-                       f"tick {tick} 受电时间 {times.get(coord)} != {want}")
-
-        # 1e. mpe 显示坐标 = ~~~ 相对偏移 + 命令方块自身位置 = 绝对锚点 + 文字朝向随轨道方向
-        expected_yaw = {"east": 0, "west": 180, "south": 90, "north": -90}[direction]
-        mpe_blocks = [(coord, b) for coord, b in blocks.items() if "command_block" in b]
-        chk.ok(len(mpe_blocks) == len(mapping), f"命令方块数 {len(mpe_blocks)} != {len(mapping)}")
-        for coord, b in mpe_blocks:
-            parsed = extract_mpe_abs(b, coord)
-            chk.ok(parsed is not None, f"无法解析 /mpe 命令: {b[:60]}")
-            if parsed:
-                _, mx, my, mz, opts = parsed
-                chk.ok(my == anchor_y, f"显示 y {my} != 锚点 {anchor_y}（方块@{coord}）")
-                if side_axis == "z":
-                    chk.ok(mz == anchor_side, f"显示 z {mz} != 锚点 {anchor_side}")
-                else:
-                    chk.ok(mx == anchor_side, f"显示 x {mx} != 锚点 {anchor_side}")
-                chk.ok(f"towards={expected_yaw},0,0" in opts,
-                       f"文字朝向错误: 期望 towards={expected_yaw},0,0，实际 {opts}")
-                chk.ok("force=true" in opts, f"缺少 force=true: {opts}")
-
-        # 1f. 中继器 facing 指向输入端（起点一侧），与音乐链一致；
-        #     这样红石信号才能从起点沿链延伸方向传播到各事件格。
-        expected_facing = OPPOSITE_FACING[direction]
-        for coord, b in blocks.items():
-            if "repeater" in b and coord[1] == chain_y:
-                chk.ok(f"facing={expected_facing}" in b,
-                       f"中继器朝向错误: 期望 facing={expected_facing}，实际 {b[:70]}")
-
+        chk.ok(f"towards={TEXT_TOWARDS_YAW[direction]},0,0" in options,
+               f"{direction} 朝向错误: {options}")
         all_ok &= chk.report(direction)
 
-    # 1g. 未显式配置时，scale 默认 10.0
+    # 固定模式：所有段的链轴坐标相同（fixed_tick=15 落在 tick 10 与 20 之间）
     chk = Checks()
-    default_cfg = base_config()
-    default_cfg.pop("lyrics_scale", None)
-    cmds = build_lyrics_commands(
-        plain_map((0,)), (0, 64, 0), "east", 0, default_cfg,
-        anchor_side=0, anchor_chain=None, anchor_y=69,
-        origin_tick=0, fixed_tick=None, chain_y=40,
-    )
-    for b in parse_setblocks(cmds).values():
-        if "command_block" in b:
-            p = extract_mpe(b)
-            if p:
-                chk.ok("scale=10.0" in p[4], f"默认 scale 应为 10.0，实际 {p[4]}")
-    all_ok &= chk.report("defaults")
+    world = make_world(follow=False)
+    coord, _, text = chain_entries(world["result"]["commands"])[0]
+    segments, _ = parse_segments(text)
+    axis = {coord[0] + segment["x"] for segment in segments}
+    chk.ok(len(axis) == 1, f"固定模式链轴坐标应唯一: {sorted(axis)}")
+    layout = dict(event_offsets(
+        chain_valid_ticks(world["virtual_layers"], 30),
+        world["config"].get("uniform_repeater_mode", False)))
+    lead = world["config"]["lyrics_lead_distance"]
+    low = START[0] + layout[10] + lead
+    high = START[0] + layout[20] + lead
+    value = sorted(axis)[0]
+    chk.ok(low <= value <= high,
+           f"固定坐标 {value} 应落在 [{low}, {high}]（tick 10~20 之间）")
+    all_ok &= chk.report("fixed")
     return all_ok
 
 
-# ── 测试 2：固定位置模式 ──────────────────────────────────────
+# ── 测试 3：文字清洗 ─────────────────────────────────────────
 
-def test_fixed_position():
-    print("测试 2：固定位置模式（文字不跟随）")
+def test_text_sanitize():
+    print("测试 3：文字清洗（空格 / 分隔符）")
     chk = Checks()
-    virtual_layers, _ = make_layers()
-    lyrics_notes = sorted(
-        [n for vl in virtual_layers for n in vl["notes"] if n.layer == 2],
-        key=lambda n: n.tick,
-    )
-    mapping = plain_map((0, 5, 10, 20, 30))
-    direction, key = "east", "x"
-    base = (100, 64, 200)
-    chain_y = 40
-    config = base_config()
-    origin, max_tick = 0, 30
-    fixed_tick = 15  # 期望落在 tick 10 与 20 之间，取更近者
+    chk.ok(sanitize_text("第一 句") == "第一_句", f"空格未转换为 _: {sanitize_text('第一 句')}")
+    chk.ok(sanitize_text("a|b") == "a丨b", "| 未被替换")
+    chk.ok(sanitize_text("a;b") == "a；b", "; 未被替换")
+    chk.ok(sanitize_text("a,b") == "a，b", ", 未被替换")
+    chk.ok(sanitize_text("a\nb\tc") == "abc", "换行/制表符未丢弃")
+    chk.ok(sanitize_text("§c红&6色") == "§c红&6色", "颜色码不应被改动")
 
-    cmds = build_lyrics_commands(
-        mapping, base, direction, max_tick, config,
-        anchor_side=base[2], anchor_chain=None, anchor_y=base[1] + 5,
-        origin_tick=origin, fixed_tick=fixed_tick, chain_y=chain_y,
-    )
-    blocks = parse_setblocks(cmds)
-    mpe = [extract_mpe_abs(b, c) for c, b in blocks.items() if "command_block" in b]
-    mpe = [p for p in mpe if p]
-    chk.ok(len(mpe) == len(mapping), f"命令方块数 {len(mpe)} != {len(mapping)}")
-    chain_coords = {p[1] for p in mpe}  # east 方向链轴为 x（绝对坐标）
-    chk.ok(len(chain_coords) == 1, f"固定模式下链轴坐标不唯一: {sorted(chain_coords)}")
-
-    # 校验固定坐标确实是离 fixed_tick 最近的事件格
-    valid_ticks = sorted({n.tick for n in lyrics_notes} | {origin, max_tick})
-    offsets = expected_event_offsets(valid_ticks, uniform=False)
-    best_tick, best_off = min(offsets, key=lambda it: abs(it[0] - fixed_tick))
-    want_x = base[0] + best_off
-    chk.ok(chain_coords == {want_x},
-           f"固定坐标 {sorted(chain_coords)} != 期望 {want_x} (tick {best_tick})")
-    return chk.report("fixed")
+    # 命令里不出现裸分隔符
+    world = make_world(texts=["a b", "c|d", "e;f", "g,h", "i\nj"])
+    _, _, text = chain_entries(world["result"]["commands"])[0]
+    segments, _ = parse_segments(text)
+    chk.ok(len(segments) == 5, f"清洗后段数 {len(segments)} != 5")
+    chk.ok(all(" " not in segment["text"] for segment in segments), "段内文字仍含空格")
+    return chk.report("sanitize")
 
 
-# ── 测试 3：命令方块链相对结构底部 ────────────────────────────
-
-def test_chain_below_structure():
-    print("测试 3：命令方块链位于整个结构底部下方（相对位置）")
-    chk = Checks()
-    virtual_layers, layer_to_group = make_layers()
-    config = base_config()
-    config["lyrics_import"] = {str(t): {"text": f"L{t}", "duration": 0}
-                               for t in (0, 5, 10, 20, 30)}
-    start = (0, 64, 0)
-    max_tick = 30
-    direction = "east"
-
-    groups = sorted(set(layer_to_group.values()))
-    offsets = compute_offsets(groups, config, len(groups))
-    group_offset_dict = {gid: offsets[i] for i, gid in enumerate(groups)}
-
-    music_cmds, activation_positions = build_all_commands_virtual(
-        virtual_layers, layer_to_group, [group_offset_dict[g] for g in groups],
-        start, direction, max_tick, use_lamp=False, uniform_repeater_mode=False,
-        group_staircase_modes={},
-    )
-    struct_bottom = find_structure_bottom(music_cmds)
-
-    lyr_cmds, lyr_activation, chain_y = build_lyrics_track(
-        virtual_layers, group_offset_dict,
-        start, direction, max_tick, config,
-        use_lamp=False, uniform_repeater_mode=False, struct_bottom_y=struct_bottom,
-    )
-
-    chk.ok(lyr_cmds, "歌词链未生成")
-    chk.ok(lyr_activation is not None, "歌词链启动点缺失")
-    chk.ok(chain_y == struct_bottom - config["lyrics_chain_y_offset"],
-           f"chain_y {chain_y} != struct_bottom {struct_bottom} - offset")
-
-    blocks = parse_setblocks(lyr_cmds)
-    chk.ok(all(c[1] <= struct_bottom - 1 for c in blocks),
-           "歌词链存在高于结构底部的方块")
-
-    # 与音乐链不重叠（同一坐标不会被两条链写两次）
-    music_blocks = parse_setblocks(music_cmds)
-    overlap = set(blocks) & set(music_blocks)
-    chk.ok(not overlap, f"歌词链与音乐链坐标重叠: {sorted(overlap)[:5]}")
-
-    # 启动点 y == chain_y 且正好在起手中继器后方 1 格（与音乐链一致：input = relay - step）
-    ax, ay, az = lyr_activation
-    chk.ok(ay == chain_y, f"启动点 y {ay} != chain_y {chain_y}")
-    dx, _, dz = DIR_OFFSET[direction]
-    start_relay = (ax + dx, chain_y, az + dz)
-    chk.ok("repeater" in blocks.get(start_relay, ""),
-           f"启动点后方 1 格不是起手中继器: {blocks.get(start_relay)}")
-    # 启动点在起手中继器之前，不应落在任何方块上
-    chk.ok("repeater" not in blocks.get((ax, chain_y, az), ""), "启动点被占用")
-
-    # 起手中继器 facing 指向输入端，即启动点一侧（与音乐链一致）
-    relay_block = blocks.get(start_relay, "")
-    chk.ok(f"facing={OPPOSITE_FACING[direction]}" in relay_block,
-           f"起手中继器朝向错误: 期望 facing={OPPOSITE_FACING[direction]}，实际 {relay_block[:70]}")
-    # 启动点在中继器的输入侧（facing 所指一侧），红石方块才能激活该中继器
-    facing_vec = (dx, dz)
-    act_to_relay = (start_relay[0] - ax, start_relay[2] - az)
-    chk.ok(act_to_relay == facing_vec,
-           f"启动点->中继器方向 {act_to_relay} != 链延伸方向 {facing_vec}（启动点应在中继器后方）")
-
-    # 启动点与音乐组启动点总数一致（每组一个 + 歌词一个）
-    all_activations = list(activation_positions.values())
-    all_activations.append(lyr_activation)
-    chk.ok(len(all_activations) == len(groups) + 1,
-           f"启动点数量 {len(all_activations)} != 组数+1 {len(groups) + 1}")
-    chk.ok(len(set(all_activations)) == len(all_activations), "启动点存在重复")
-
-    # 计时与音乐链一致：歌词链事件受电时间 == 1 + (tick - origin)
-    times, err = simulate_layer(blocks, chain_y, "x", dx)
-    chk.ok(err is None, err or "")
-    if times is not None:
-        for tick in (0, 5, 10, 20, 30):
-            off = dict(expected_event_offsets(sorted({0, 5, 10, 20, 30}), False))[tick]
-            chk.ok(times.get(start[0] + off) == 1 + tick,
-                   f"tick {tick} 受电时间错误")
-    return chk.report("relative")
-
-
-# ── 测试 4：圆形排版 —— 链仍在最底部，文字在主轨道上方 ────────
-
-def test_circle_layout():
-    print("测试 4：圆形排版下的相对位置")
-    chk = Checks()
-    virtual_layers, layer_to_group = make_layers()
-    config = base_config()
-    config.update({"layout_style": "circle", "layout_radius": 6,
-                   "lyrics_follow": False})
-    config["lyrics_import"] = {str(t): {"text": f"L{t}", "duration": 0}
-                               for t in (0, 5, 10, 20, 30)}
-    start = (0, 64, 0)
-    max_tick = 30
-    groups = sorted(set(layer_to_group.values()))
-    offsets = compute_offsets(groups, config, len(groups))
-    group_offset_dict = {gid: offsets[i] for i, gid in enumerate(groups)}
-
-    music_cmds, _ = build_all_commands_virtual(
-        virtual_layers, layer_to_group, [group_offset_dict[g] for g in groups],
-        start, "east", max_tick, False, False, {},
-    )
-    struct_bottom = find_structure_bottom(music_cmds)
-
-    lyr_cmds, _, chain_y = build_lyrics_track(
-        virtual_layers, group_offset_dict,
-        start, "east", max_tick, config, struct_bottom_y=struct_bottom,
-    )
-    chk.ok(lyr_cmds, "歌词链未生成")
-    chk.ok(chain_y < struct_bottom, "歌词链没有位于结构下方")
-
-    blocks = parse_setblocks(lyr_cmds)
-    mpe = [extract_mpe_abs(b, c) for c, b in blocks.items() if "command_block" in b]
-    mpe = [p for p in mpe if p]
-    chk.ok(mpe, "没有命令方块")
-    # 圆形排版：主轨道偏移 (0,0) 或 master；文字 y 应为 start_y + offset + lyrics_y_offset
-    ys = {p[2] for p in mpe}
-    chk.ok(all(y >= start[1] for y in ys), f"文字 y 低于结构起始: {sorted(ys)}")
-    chk.ok(len(ys) == 1, f"固定模式文字高度应唯一: {sorted(ys)}")
-    # 固定模式链轴坐标应唯一
-    xs = {p[1] for p in mpe}
-    chk.ok(len(xs) == 1, f"固定模式链轴坐标应唯一: {sorted(xs)}")
-    return chk.report("circle")
-
-
-# ── 测试 5：流式歌词（累积显示）───────────────────────────────
+# ── 测试 4：流式合并 ─────────────────────────────────────────
 
 def test_streaming():
-    print("测试 5：流式歌词累积显示、切段与命令方块输出")
+    print("测试 4：流式合并（累积成句 + 逐字入场）")
     chk = Checks()
     config = base_config()
     config.update({"lyrics_stream": True, "lyrics_stream_seconds": 2.0,
                    "lyrics_stream_max_len": 18})
-    tempo = 5.0  # 5 note/s -> 2 秒 = 10 tick
 
-    # 阈值换算：13 note/s、2 秒 -> 26 tick
     chk.ok(stream_threshold_ticks({"lyrics_stream_seconds": 2.0}, 13) == 26,
            "阈值换算错误（应为 26 tick）")
     chk.ok(stream_threshold_ticks({"lyrics_stream_seconds": 1.0}, 2) == 2,
            "阈值换算错误（应为 2 tick）")
 
-    # A B C 连续累积；100 处间隔过大 -> 新段 E F
     entries = [(0, "A", 0), (2, "B", 0), (4, "C", 0), (100, "E", 0), (102, "F", 0)]
-    mapping = build_stream_mapping(entries, config, tempo)
-    chk.ok([(m["tick"], m["text"]) for m in mapping] ==
-           [(0, "A"), (2, "AB"), (4, "ABC"), (100, "E"), (102, "EF")],
-           f"累积文本错误: {[(m['tick'], m['text']) for m in mapping]}")
-    chk.ok(all(m["clear"] for m in mapping), "流式映射应全部带清除标记")
-    chk.ok(mapping[0]["enter"] == 0 and mapping[0]["exit"] == 0, "中间文字不应带动画")
-    chk.ok(mapping[1]["enter"] == 0 and mapping[1]["exit"] == 0, "中间文字不应带动画")
-    chk.ok(mapping[2]["enter"] == 0 and mapping[2]["exit"] == config["lyrics_exit"],
-           "段尾文字应保留自身出场动画")
-
-    # 单条即成段：使用配置动画
-    solo = build_stream_mapping([(0, "X", 0), (100, "Y", 0)], config, tempo)
-    chk.ok([s["text"] for s in solo] == ["X", "Y"], "单条段切分错误")
-    chk.ok(solo[0]["enter"] == config["lyrics_enter"] and solo[1]["exit"] == config["lyrics_exit"],
-           "单条段应使用配置动画")
+    segments = build_display_segments(entries, config, tempo=5.0)
+    chk.ok([(s["tick"], s["text"]) for s in segments] == [(0, "ABC"), (100, "EF")],
+           f"流式合并结果错误: {[(s['tick'], s['text']) for s in segments]}")
+    chk.ok(all(s["enter_override"] for s in segments), "流式段应按段长覆盖入场时长")
+    chk.ok(all(s["duration"] >= 1 and s["enter"] >= 1 for s in segments), "时长必须 ≥ 1")
 
     # 长度上限触发断段
-    limit_cfg = dict(config)
-    limit_cfg["lyrics_stream_max_len"] = 3
-    limited = build_stream_mapping([(0, "A", 0), (2, "B", 0), (4, "C", 0), (6, "D", 0)], limit_cfg, tempo)
-    chk.ok([m["text"] for m in limited] == ["A", "AB", "ABC", "D"],
-           f"长度上限切段错误: {[m['text'] for m in limited]}")
+    limited = build_display_segments(
+        [(0, "A", 0), (2, "B", 0), (4, "C", 0), (6, "D", 0)],
+        dict(config, lyrics_stream_max_len=3), tempo=5.0)
+    chk.ok([s["text"] for s in limited] == ["ABC", "D"],
+           f"长度上限切段错误: {[s['text'] for s in limited]}")
 
-    # 命令方块输出：每个流式显示点 = 事件格(清除全部文字) + 下方链式命令方块(显示)
-    chain_y = 40
-    out_map = build_stream_mapping([(0, "A", 0), (5, "B", 0)], config, tempo)
-    cmds = build_lyrics_commands(
-        out_map, (100, 64, 200), "east", 30, config,
-        anchor_side=200, anchor_chain=None, anchor_y=69,
-        origin_tick=0, fixed_tick=None, chain_y=chain_y,
-    )
-    blocks = parse_setblocks(cmds)
-    clears = {c: b for c, b in blocks.items() if "/mpe clear text" in b}
-    chains = {c: b for c, b in blocks.items() if "chain_command_block" in b}
-    chk.ok(len(clears) == 2, f"清除命令方块数量错误: {len(clears)}")
-    chk.ok(len(chains) == 2, f"链式命令方块数量错误: {len(chains)}")
-    for coord, block in chains.items():
-        chk.ok(coord[1] == chain_y - 1, f"链式命令方块不在事件格下方: {coord}")
-        chk.ok("auto:1b" in block and "facing=down" in block,
-               f"链式命令方块参数错误: {block}")
-        above = (coord[0], coord[1] + 1, coord[2])
-        chk.ok("/mpe clear text" in blocks.get(above, ""),
-               f"链式命令方块上方不是清除方块: {blocks.get(above)}")
-    texts_out = sorted(p[0] for p in (extract_mpe(b) for b in chains.values()) if p)
-    chk.ok(texts_out == ["A", "AB"], f"输出累积文字错误: {texts_out}")
+    # 关闭流式时逐条显示
+    plain = build_display_segments(entries, dict(config, lyrics_stream=False), tempo=5.0)
+    chk.ok([s["text"] for s in plain] == ["A", "B", "C", "E", "F"],
+           f"非流式结果错误: {[s['text'] for s in plain]}")
+    chk.ok(not any(s["enter_override"] for s in plain), "非流式不应覆盖入场时长")
 
-    # 流式文字的 ~~~ 相对坐标基于链式命令方块位置（chain_y - 1），加偏移后 = 绝对锚点
-    for coord, block in chains.items():
-        parsed = extract_mpe_abs(block, coord)
-        chk.ok(parsed is not None, f"无法解析流式 /mpe: {block[:60]}")
-        if parsed:
-            _, mx, my, mz, _ = parsed
-            chk.ok(my == 69, f"流式显示 y {my} != 69（方块@{coord}）")
-            chk.ok(mz == 200, f"流式显示 z {mz} != 200（east 侧轴=z）")
-
-    # 关闭流式时仍为单命令方块
-    config["lyrics_stream"] = False
-    chk.ok(not any("chain_command_block" in b for b in
-                   parse_setblocks(build_lyrics_commands(
-                       plain_map((0, 5, 10, 20, 30)), (100, 64, 200),
-                       "east", 30, config, anchor_side=200, anchor_y=69,
-                       origin_tick=0, fixed_tick=None, chain_y=chain_y,
-                   )).values()),
-           "未启用流式时不应出现链式命令方块")
+    # 命令里：全局带 in=，流式段只覆盖 enter
+    world = make_world(lyric_ticks=(0, 2, 4), texts=["第", "一", "句"], stream=True)
+    _, _, text = chain_entries(world["result"]["commands"])[0]
+    segments_out, options = parse_segments(text)
+    chk.ok(len(segments_out) == 1, f"流式应合并成 1 段，实际 {len(segments_out)}")
+    chk.ok(segments_out[0]["text"] == "第一句",
+           f"合并文字错误: {segments_out[0]['text']}")
+    chk.ok(any(opt.startswith("enter=") for opt in segments_out[0]["opts"]),
+           f"流式段应覆盖 enter: {segments_out[0]['opts']}")
+    chk.ok("in=typewriter:left" in options, f"全局缺少入场动画: {options}")
     return chk.report("stream")
 
 
-# ── 测试 6：v2 歌词模板解析 ──────────────────────────────────
+# ── 测试 4b：保持距离 / 随机抖动 / 动画选项 ───────────────────
+
+def test_lead_and_jitter():
+    print("测试 4b：保持距离、随机抖动与动画选项")
+    chk = Checks()
+
+    # 保持距离：lead 越大，文字离激活位置越远
+    def text_x(lead):
+        world = make_world(lyric_ticks=(0,), lyrics_lead_distance=lead)
+        coord, _, text = chain_entries(world["result"]["commands"])[0]
+        segment = parse_segments(text)[0][0]
+        return coord[0] + segment["x"]
+
+    chk.ok(text_x(16) == START[0] + 0 + 16, f"默认保持距离错误: {text_x(16)}")
+    chk.ok(text_x(40) - text_x(16) == 24, "保持距离未按设置线性变化")
+
+    # 固定模式也带保持距离
+    world = make_world(follow=False, lyric_ticks=(0,), lyrics_lead_distance=8)
+    coord, _, text = chain_entries(world["result"]["commands"])[0]
+    layout = dict(event_offsets(
+        chain_valid_ticks(world["virtual_layers"], 30),
+        world["config"].get("uniform_repeater_mode", False)))
+    value = coord[0] + parse_segments(text)[0][0]["x"]
+    chk.ok(START[0] + layout[10] + 8 <= value <= START[0] + layout[20] + 8,
+           f"固定模式的保持距离错误: {value}")
+
+    # 随机抖动：范围 ±2/±1/±0.5，且都是 0.5 的整数倍
+    world = make_world(lyric_ticks=(0, 10, 20),
+                       lyrics_jitter_x=2.0, lyrics_jitter_y=1.0, lyrics_jitter_z=0.5,
+                       rng=random.Random(1234))
+    coord, _, text = chain_entries(world["result"]["commands"])[0]
+    segments = parse_segments(text)[0]
+    layout = dict(event_offsets(
+        chain_valid_ticks(world["virtual_layers"], 30),
+        world["config"].get("uniform_repeater_mode", False)))
+    base_x = START[0] + world["config"]["lyrics_lead_distance"]
+    sides = [offset[1] for offset in world["offsets"].values()]
+    base_z = START[2] + (min(sides) + max(sides)) // 2
+    base_y = START[1] + world["config"]["lyrics_y_offset"]
+    limits = (2.0, 1.0, 0.5)
+    for segment, tick in zip(segments, (0, 10, 20)):
+        offsets = (coord[0] + segment["x"] - (base_x + layout[tick]),
+                   coord[1] + segment["y"] - base_y,
+                   coord[2] + segment["z"] - base_z)
+        for value, limit in zip(offsets, limits):
+            chk.ok(abs(value) <= limit + 1e-9, f"tick {tick} 抖动 {value} 超出 ±{limit}")
+            chk.ok(abs(value * 2 - round(value * 2)) < 1e-9,
+                   f"tick {tick} 抖动 {value} 不是 0.5 的倍数")
+
+    # 抖动为 0 时不产生偏移
+    world = make_world(lyric_ticks=(0,))
+    coord, _, text = chain_entries(world["result"]["commands"])[0]
+    segment = parse_segments(text)[0][0]
+    chk.ok(float(segment["x"]).is_integer() and float(segment["y"]).is_integer()
+           and float(segment["z"]).is_integer(), "未开启抖动时坐标应为整数")
+
+    # 动画选项：全局 in= / out=
+    world = make_world(lyrics_anim_in="wipe:left", lyrics_anim_out="scale:shrink")
+    _, options = parse_segments(chain_entries(world["result"]["commands"])[0][2])
+    chk.ok("in=wipe:left" in options, f"入场动画未写入: {options}")
+    chk.ok("out=scale:shrink" in options, f"出场动画未写入: {options}")
+
+    # 关闭动画时不写 in= / out=
+    world = make_world(lyrics_anim_in="", lyrics_anim_out="")
+    _, options = parse_segments(chain_entries(world["result"]["commands"])[0][2])
+    chk.ok(not any(opt.startswith("in=") for opt in options), f"不应写入 in=: {options}")
+    chk.ok(not any(opt.startswith("out=") for opt in options), f"不应写入 out=: {options}")
+    return chk.report("lead-jitter")
+
+
+# ── 测试 4c：中继器合并 / 均匀模式的链条布局与文字位置 ────────
+
+def _expected_chain_offsets(layout, uniform):
+    """由 event_offsets 推导链条层上所有方块的链轴偏移（测试用，独立于生成器实现）。"""
+    coords = {-1}  # 起手中继器在起点之前一格
+    for index, (tick, offset) in enumerate(layout):
+        coords.add(offset)      # 事件格
+        coords.add(offset + 1)  # 事件格后的 delay=1 中继器
+        if index + 1 < len(layout):
+            blank = layout[index + 1][0] - tick - 1
+            pairs = blank if uniform else -(-blank // 4)
+            for k in range(pairs):
+                coords.add(offset + 2 + 2 * k)  # 羊毛连接块
+                coords.add(offset + 3 + 2 * k)  # 中继器
+    return coords
+
+
+def test_repeater_modes():
+    print("测试 4c：中继器合并 / 均匀模式下的链条布局与文字位置")
+    chk = Checks()
+    ticks = (0, 100, 200)
+    max_tick = 200
+    last_offsets = {}
+
+    for uniform in (False, True):
+        notes = [FakeNote(tick, layer=0) for tick in ticks]
+        virtual_layers = [{"vid": 0, "original_id": 0, "side": None,
+                           "notes": notes, "inst": 0, "cat": "钢琴"}]
+        layer_to_group = {0: 0}
+        config = base_config()
+        config["uniform_repeater_mode"] = uniform
+        config["lyrics_import"] = [{"tick": tick, "text": f"L{tick}", "duration": 0}
+                                   for tick in ticks]
+
+        music_cmds, _ = build_all_commands_virtual(
+            virtual_layers, layer_to_group, [(0, 0)], START, "east", max_tick,
+            uniform_repeater_mode=uniform, group_staircase_modes={})
+        bottom = find_structure_bottom(music_cmds)
+        result = build_lyrics_chain(
+            virtual_layers, {0: (0, 0)}, START, "east", max_tick, config,
+            struct_bottom_y=bottom)
+
+        # 链条层（组 Y = START[1]）上的方块坐标应与 event_offsets 推导的布局完全一致
+        layout = event_offsets(chain_valid_ticks(virtual_layers, max_tick), uniform)
+        chain_offsets = {x - START[0] for (x, y, z), _ in parse_blocks(music_cmds)
+                         if y == START[1] and x >= START[0] - 1}
+        expected = _expected_chain_offsets(layout, uniform)
+        chk.ok(chain_offsets == expected,
+               f"uniform={uniform}: 链条层坐标与布局不一致，"
+               f"多出 {sorted(chain_offsets - expected)[:5]}，缺少 {sorted(expected - chain_offsets)[:5]}")
+
+        last_relay = max(chain_offsets) + START[0]
+        last_offsets[uniform] = layout[-1][1]
+        chk.ok(last_relay - START[0] == layout[-1][1] + 1,
+               f"uniform={uniform}: 链条末端偏移 {last_relay - START[0]} "
+               f"!= 事件格 {layout[-1][1]} + 1")
+
+        # 文字位置必须落在链条末端附近（合并模式下不能按「每 tick 2 格」漂走）
+        coord, _, text = chain_entries(result["commands"])[0]
+        lead = config["lyrics_lead_distance"]
+        for segment, tick in zip(parse_segments(text)[0], ticks):
+            abs_x = coord[0] + segment["x"]
+            want = START[0] + dict(layout)[tick] + lead
+            chk.ok(abs_x == want,
+                   f"uniform={uniform} tick {tick}: 文字 x {abs_x} != {want}")
+            chk.ok(abs_x <= last_relay + lead + 1,
+                   f"uniform={uniform} tick {tick}: 文字漂到 {abs_x}（链条末端 {last_relay}）")
+
+        # 时间轴：合并模式只压缩格数，事件格受电时间仍是 2 × (1 + tick - origin)
+        powered = {}
+        power = 0
+        for (x, y, z), block in sorted(parse_blocks(music_cmds),
+                                      key=lambda item: item[0][0]):
+            if y != START[1] or x < START[0] - 1:
+                continue
+            if "repeater" in block:
+                match = DELAY_RE.search(block)
+                power += (int(match.group(1)) if match else 1) * 2
+            else:
+                powered[x - START[0]] = power
+        for tick, offset in layout:
+            chk.ok(powered.get(offset) == 2 * (1 + tick),
+                   f"uniform={uniform} tick {tick}: 受电时间 {powered.get(offset)} "
+                   f"!= {2 * (1 + tick)}")
+
+    # 同一首歌：合并模式链条明显更短，均匀模式约 2 格/音乐 tick
+    chk.ok(last_offsets[True] == 2 * max_tick,
+           f"均匀模式事件格偏移应为 2×{max_tick}=400: {last_offsets[True]}")
+    chk.ok(last_offsets[False] < last_offsets[True],
+           f"合并模式链条未变短: {last_offsets}")
+    chk.ok(last_offsets[False] < 2 * max_tick // 2,
+           f"合并模式偏移应远小于 400: {last_offsets[False]}")
+    return chk.report("repeater-modes")
+
+
+# ── 测试 5：位置与结构 ───────────────────────────────────────
+
+def test_layout_and_placement():
+    print("测试 5：命令方块位置（结构下方、不与音乐链重叠）")
+    chk = Checks()
+    for style, extra in (("flat", {}), ("circle", {"layout_radius": 6}), ("square", {"layout_radius": 6})):
+        world = make_world()
+        world["config"].update({"layout_style": style, **extra})
+        virtual_layers = world["virtual_layers"]
+        layer_to_group = {0: 0, 1: 1}
+        groups = sorted(set(layer_to_group.values()))
+        offsets = compute_offsets(groups, world["config"], len(groups))
+        group_offset_dict = {gid: offsets[index] for index, gid in enumerate(groups)}
+        music_cmds, _ = build_all_commands_virtual(
+            virtual_layers, layer_to_group,
+            [group_offset_dict[gid] for gid in groups], START, "east", 30,
+            group_staircase_modes={})
+        bottom = find_structure_bottom(music_cmds)
+        result = build_lyrics_chain(
+            virtual_layers, group_offset_dict, START, "east", 30, world["config"],
+            struct_bottom_y=bottom, tempo=13)
+        chk.ok(result is not None, f"{style}: 歌词链未生成")
+        if not result:
+            continue
+        coords = {coord for coord, _ in parse_blocks(result["commands"])}
+        chk.ok(all(coord[1] <= bottom - 1 for coord in coords),
+               f"{style}: 歌词命令方块高于结构底部")
+        music_coords = {coord for coord, _ in parse_blocks(music_cmds)}
+        chk.ok(not (coords & music_coords),
+               f"{style}: 与音乐链坐标重叠 {sorted(coords & music_coords)[:3]}")
+
+        # 文字锚点在主轨道上方
+        block_coord, _, text = chain_entries(result["commands"])[0]
+        segments, _ = parse_segments(text)
+        ys = {block_coord[1] + segment["y"] for segment in segments}
+        chk.ok(all(y >= START[1] for y in ys), f"{style}: 文字低于结构起始: {sorted(ys)}")
+        chk.ok(len(ys) == 1, f"{style}: 文字高度应唯一: {sorted(ys)}")
+    return chk.report("placement")
+
+
+# ── 测试 6：超长命令分批 ─────────────────────────────────────
+
+def test_batching():
+    print("测试 6：超过命令长度上限时自动分批")
+    chk = Checks()
+    ticks = list(range(0, 600, 2))
+    texts = ["长" * 120 for _ in ticks]
+    world = make_world(lyric_ticks=ticks, texts=texts, max_tick=600)
+    result = world["result"]
+    chk.ok(result is not None, "歌词链未生成")
+    if not result:
+        return chk.report("batch")
+
+    chk.ok(result["batches"] > 1, f"应分批，实际 {result['batches']} 批")
+    entries = chain_entries(result["commands"])
+    chk.ok(len(entries) == result["batches"],
+           f"命令数 {len(entries)} != 批数 {result['batches']}")
+    for _, _, text in entries:
+        chk.ok(len(text) <= MAX_CHAIN_COMMAND_LEN,
+               f"命令长度 {len(text)} 超过上限 {MAX_CHAIN_COMMAND_LEN}")
+        chk.ok(" id=" in text, "分批时必须带 id= 以免互相重置")
+
+    ids = {option for _, _, text in entries for option in text.split(" ") if option.startswith("id=")}
+    chk.ok(len(ids) == len(entries), f"分批 id 不唯一: {sorted(ids)}")
+
+    # 段数守恒：所有批次加起来等于原始字幕条数
+    total = sum(len(parse_segments(text)[0]) for _, _, text in entries)
+    chk.ok(total == len(ticks), f"段总数 {total} != {len(ticks)}")
+
+    # 分批后第一批的 start 偏移随批数增加，仍保持时间对齐
+    first_segments, _ = parse_segments(entries[0][2])
+    bias = result["batches"] + 1
+    chk.ok(first_segments[0]["start"] == 2 * ticks[0] + bias,
+           f"首批 start {first_segments[0]['start']} != {2 * ticks[0] + bias}")
+    return chk.report("batch")
+
+
+# ── 测试 7：v2 歌词模板解析 ──────────────────────────────────
 
 def test_lyrics_json_v2():
-    print("测试 6：编辑器 v2 歌词模板解析（数组 + lane 过滤）")
+    print("测试 7：编辑器 v2 歌词模板解析（数组 + lane 过滤）")
     chk = Checks()
 
     data = {
@@ -594,7 +678,8 @@ def test_lyrics_json_v2():
         os.remove(path)
 
     # 旧版对象格式（v1）应给出明确报错
-    old = _write_temp_json({"type": "noteblock-web-lyrics", "lyrics": {"10": {"text": "x", "duration": 1}}})
+    old = _write_temp_json({"type": "noteblock-web-lyrics",
+                            "lyrics": {"10": {"text": "x", "duration": 1}}})
     try:
         try:
             load_lyrics_json(old)
@@ -608,90 +693,182 @@ def test_lyrics_json_v2():
 
 def _write_temp_json(data):
     import tempfile
-    fp = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
+    handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
     try:
-        json.dump(data, fp, ensure_ascii=False)
+        json.dump(data, handle, ensure_ascii=False)
     finally:
-        fp.close()
-    return fp.name
+        handle.close()
+    return handle.name
 
 
-# ── 测试 7：顺序系统音色合并 ──────────────────────────────────
+# ── 测试 8：顺序系统音色合并 ──────────────────────────────────
 
 def test_sequential_inst_grouping():
-    print("测试 7：顺序系统音色合并（相邻同音色、每组最多 3 条）")
+    print("测试 8：顺序系统音色合并（相邻同音色、每组最多 3 条）")
     chk = Checks()
-    insts = [0, 0, 0, 0, 1, 0, 0, 2, 2]
+    instruments = [0, 0, 0, 0, 1, 0, 0, 2, 2]
     layers = [{"vid": i, "original_id": i, "side": None, "inst": inst, "cat": f"c{inst}"}
-              for i, inst in enumerate(insts)]
+              for i, inst in enumerate(instruments)]
     layer_to_group = auto_group_by_mode_on_layers(layers, 3)
 
     grouped = {}
     for vid, gid in layer_to_group.items():
         grouped.setdefault(gid, []).append(vid)
-    result = [sorted(grouped[k]) for k in sorted(grouped)]
+    result = [sorted(grouped[key]) for key in sorted(grouped)]
     chk.ok(result == [[0, 1, 2], [3], [4], [5, 6], [7, 8]],
            f"分组结果错误: {result}")
-    chk.ok(all(len(m) <= 3 for m in result), "存在超过 3 条的组")
+    chk.ok(all(len(members) <= 3 for members in result), "存在超过 3 条的组")
     for members in result:
-        chk.ok(len({insts[v] for v in members}) == 1, f"组内音色不一致: {members}")
+        chk.ok(len({instruments[vid] for vid in members}) == 1, f"组内音色不一致: {members}")
         chk.ok(members == list(range(members[0], members[0] + len(members))),
                f"组内轨道不连续: {members}")
     return chk.report("seq-group")
 
 
-# ── 测试 8：歌词晚于歌曲结尾时不截断 ──────────────────────────
+# ── 测试 9：歌词晚于歌曲结尾 ─────────────────────────────────
 
 def test_lyrics_beyond_song_length():
-    print("测试 8：歌词晚于歌曲结尾时应全部生成、歌词链自动延伸")
+    print("测试 9：歌词晚于歌曲结尾时应全部生成")
+    chk = Checks()
+    lyric_ticks = (0, 5, 10, 20, 30, 40)
+    world = make_world(lyric_ticks=lyric_ticks, max_tick=20)
+    result = world["result"]
+    chk.ok(result is not None, "歌词链未生成")
+    if not result:
+        return chk.report("beyond-song")
+
+    chk.ok(result["end_tick"] == 40, f"end_tick {result['end_tick']} != 40")
+    _, _, text = chain_entries(result["commands"])[0]
+    segments, _ = parse_segments(text)
+    chk.ok(len(segments) == len(lyric_ticks),
+           f"尾段歌词被截断：只生成 {len(segments)} 条，应为 {len(lyric_ticks)} 条")
+    chk.ok(segments[-1]["text"] == f"L{lyric_ticks[-1]}",
+           f"最后一条歌词错误: {segments[-1]['text']}")
+    # 最后一条仍按 2 tick/音乐 tick 前进
+    chk.ok(segments[-1]["start"] == 2 * lyric_ticks[-1] + 2,
+           f"末段 start {segments[-1]['start']} 未对齐")
+    return chk.report("beyond-song")
+
+
+# ── 测试 10：GBK 控制台安全 ──────────────────────────────────
+
+def test_console_encoding():
+    print("测试 10：Windows GBK 控制台输出安全")
+    chk = Checks()
+    for label, text in (("success", Ansi.success("ok")), ("error", Ansi.error("bad")),
+                        ("title", Ansi.title("标题")), ("prompt", Ansi.prompt("提示"))):
+        try:
+            text.encode("gbk")
+            chk.ok(True, "")
+        except UnicodeEncodeError:
+            chk.ok(False, f"{label} 输出无法用 GBK 编码: {text!r}")
+    return chk.report("encoding")
+
+
+# ── 测试 11：完整命令序列（启动链 + 歌词 + 粒子）────────────
+
+class FakeHeader:
+    song_name = "test"
+    original_author = "tester"
+    tempo = 13.0
+
+
+class FakeLayer:
+    def __init__(self, layer_id, name):
+        self.id = layer_id
+        self.name = name
+        self.volume = 100
+        self.panning = 0
+
+
+class FakeSong:
+    def __init__(self, notes, layers):
+        self.header = FakeHeader()
+        self.notes = notes
+        self.layers = layers
+
+
+def _abs_rel(token, origin):
+    return origin if token == "~" else origin + int(token[1:])
+
+
+def test_full_structure():
+    from miaunoteblock.app import build_commands
+
+    print("测试 11：完整命令序列（启动链 / 歌词 / 粒子一起生成）")
     chk = Checks()
     virtual_layers, layer_to_group = make_layers()
+    notes = [note for layer in virtual_layers for note in layer["notes"]]
+    song = FakeSong(notes, [FakeLayer(0, "钢琴"), FakeLayer(1, "吉他")])
     config = base_config()
-    # 歌词 tick 一直到 40，但歌曲 max_tick 只到 20
-    lyric_ticks = (0, 5, 10, 20, 30, 40)
-    config["lyrics_import"] = {str(t): {"text": f"L{t}", "duration": 0} for t in lyric_ticks}
-    start = (0, 64, 0)
-    song_max_tick = 20
+    config["lyrics_import"] = [{"tick": tick, "text": f"L{tick}", "duration": 0}
+                               for tick in (0, 10, 20)]
+    config["particles_enabled"] = True
+    config["particles_layers"] = [0]
 
-    groups = sorted(set(layer_to_group.values()))
-    offsets = compute_offsets(groups, config, len(groups))
-    group_offset_dict = {gid: offsets[i] for i, gid in enumerate(groups)}
-    music_cmds, _ = build_all_commands_virtual(
-        virtual_layers, layer_to_group, [group_offset_dict[g] for g in groups],
-        start, "east", song_max_tick, False, False, {},
-    )
-    struct_bottom = find_structure_bottom(music_cmds)
+    commands = build_commands(config, song, virtual_layers, layer_to_group, 30)
 
-    lyr_cmds, _, chain_y = build_lyrics_track(
-        virtual_layers, group_offset_dict, start, "east", song_max_tick, config,
-        struct_bottom_y=struct_bottom, tempo=13,
-    )
-    blocks = parse_setblocks(lyr_cmds)
-    texts = sorted(p[0] for p in
-                   (extract_mpe_abs(b, c) for c, b in blocks.items()) if p)
-    chk.ok(len(texts) == len(lyric_ticks),
-           f"尾段歌词被截断：只生成 {len(texts)} 条，应为 {len(lyric_ticks)} 条")
-    chk.ok(f"L{lyric_ticks[-1]}" in texts, f"最后一条歌词 L{lyric_ticks[-1]} 未生成")
+    chains = chain_entries(commands)
+    chk.ok(len(chains) == 1, f"歌词命令方块数 {len(chains)} != 1")
+    block_map = block_commands(parse_blocks(commands))
+    command_texts = list(block_map.values())
+    chk.ok(sum(1 for text in command_texts if "/mpe noteblock chain" in text) == 1,
+           "粒子命令方块数量不对")
+    if not chains:
+        return chk.report("full")
 
-    # 歌词链延伸到覆盖最后一条歌词所在的事件格
-    offsets_evt = expected_event_offsets(sorted(lyric_ticks), uniform=False)
-    last_off = max(off for _, off in offsets_evt)
-    chain_xs = {c[0] for c in blocks if c[1] == chain_y}
-    chk.ok(start[0] + last_off in chain_xs,
-           f"链未延伸到最后一条歌词位置 x={start[0] + last_off}")
-    return chk.report("beyond-song")
+    # 启动链：每个目标格一条 setblock redstone_block，外加一条清除用的 air
+    place_targets = []
+    for coord, text in block_map.items():
+        if not text.startswith("setblock ") or "minecraft:redstone_block" not in text:
+            continue
+        parts = text.split()
+        target = tuple(_abs_rel(parts[index], coord[index - 1]) for index in (1, 2, 3))
+        place_targets.append((coord, target))
+    chk.ok(len(place_targets) == 1 + 2,
+           f"启动链环数 {len(place_targets)} != 歌词 1 + 组 2")
+    if len(place_targets) != 3:
+        return chk.report("full")
+
+    place_targets.sort(key=lambda item: item[0][1])
+    dx, _, dz = DIR_OFFSET["east"]
+    lyric_coord = chains[0][0]
+    lyric_activation = (lyric_coord[0] + dx, lyric_coord[1], lyric_coord[2] + dz)
+
+    # 歌词的激活红石块必须在第一环（最早执行），否则 start 对齐会整体偏移
+    chk.ok(place_targets[0][1] == lyric_activation,
+           f"第一环放置 {place_targets[0][1]} 不是歌词激活点 {lyric_activation}")
+    blocks = dict(parse_blocks(commands))
+    first_block = blocks.get(place_targets[0][0], "")
+    chk.ok("minecraft:command_block[facing=up]" in first_block,
+           f"第一环应为脉冲命令方块: {first_block[:70]}")
+    for coord, _ in place_targets[1:]:
+        chk.ok("minecraft:chain_command_block" in blocks.get(coord, ""),
+               f"后续环应为链式命令方块: {blocks.get(coord, '')[:70]}")
+
+    # 清除用的红石块与放置用的一一对应
+    clear_targets = [text for text in command_texts
+                     if text.startswith("setblock ") and text.endswith("minecraft:air")]
+    chk.ok(len(clear_targets) == len(place_targets),
+           f"清除命令 {len(clear_targets)} != 放置命令 {len(place_targets)}")
+    return chk.report("full")
 
 
 def main():
     results = [
-        test_lyrics_timing_all_directions(),
-        test_fixed_position(),
-        test_chain_below_structure(),
-        test_circle_layout(),
+        test_command_shape(),
+        test_timing_and_position(),
+        test_text_sanitize(),
         test_streaming(),
+        test_lead_and_jitter(),
+        test_repeater_modes(),
+        test_layout_and_placement(),
+        test_batching(),
         test_lyrics_json_v2(),
         test_sequential_inst_grouping(),
         test_lyrics_beyond_song_length(),
+        test_console_encoding(),
+        test_full_structure(),
     ]
     print()
     if all(results):
