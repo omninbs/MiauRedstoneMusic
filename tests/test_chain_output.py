@@ -7,14 +7,16 @@
 2. 时间对齐：`start = 2×(tick − origin)` + 启动链补偿，与主音乐链同一计时基准。
 3. 文字坐标：相对偏移 + 命令方块位置 = 期望的文字锚点（跟随 / 固定）。
 4. 文字清洗：空格写 `_`，`|` `;` `,` 换成全角，换行丢弃。
-5. 流式合并：连续文字累积成一句 + 段内覆盖入场时长。
-6. 保持距离（文字 = 激活中继器位置 + lead）、XYZ 随机抖动与入场/出场动画选项。
-7. 命令方块位置：结构最低方块下方，且不与音乐链坐标重叠。
-8. 超长命令分批：多条命令各带唯一 id，长度都在上限内。
-9. 编辑器 v2 歌词模板解析与 lane 过滤。
-10. 顺序系统音色合并（按音轨顺序、相邻同音色、每组最多 3 条）。
-11. 歌词晚于歌曲结尾时不被截断。
-12. Windows GBK 控制台不会因输出符号崩溃。
+5. 逐字断句：`duration > threshold`（严格大于）断句、长音字属当前句、标点断句开关。
+6. `chars=` 时间表：项数 = 可见字符数、字start/字duration 与歌词数据一致（×2 tick）、
+   段 `duration` 写 0。
+7. 保持距离（文字 = 激活中继器位置 + lead）、XYZ 随机抖动与入场/出场动画选项。
+8. 命令方块位置：结构最低方块下方，且不与音乐链坐标重叠。
+9. 超长命令分批：多条命令各带唯一 id，长度都在上限内。
+10. 编辑器 v2 歌词模板解析与 lane 过滤；多字 / 缺 duration 直接报错。
+11. 顺序系统音色合并（按音轨顺序、相邻同音色、每组最多 3 条）。
+12. 歌词晚于歌曲结尾时不被截断。
+13. Windows GBK 控制台不会因输出符号崩溃。
 """
 
 import json
@@ -36,11 +38,12 @@ from miaunoteblock.generation import (
 from miaunoteblock.instruments import auto_group_by_mode_on_layers
 from miaunoteblock.lyrics import (
     MAX_CHAIN_COMMAND_LEN,
-    build_display_segments,
+    build_char_segments,
     build_lyrics_chain,
+    break_sentences,
     load_lyrics_json,
     sanitize_text,
-    stream_threshold_ticks,
+    visible_length,
 )
 
 
@@ -77,10 +80,13 @@ def base_config():
         "master_group": None,
         "lyrics_color": "white",
         "lyrics_scale": 10.0,
-        "lyrics_duration": 20,
-        "lyrics_enter": 5,
-        "lyrics_exit": 5,
-        "lyrics_anim_in": "typewriter:left",
+        "lyrics_char_threshold": 4,
+        "lyrics_max_chars": 18,
+        "lyrics_break_on_punctuation": False,
+        "lyrics_start_lead_ticks": 4,
+        "lyrics_enter": 0,
+        "lyrics_exit": 3,
+        "lyrics_anim_in": "scale:enlarge",
         "lyrics_anim_out": "",
         "lyrics_y_offset": 5,
         "lyrics_side_offset": None,
@@ -90,26 +96,30 @@ def base_config():
         "lyrics_jitter_z": 0.0,
         "lyrics_follow": True,
         "lyrics_chain_y_offset": 1,
-        "lyrics_stream": False,
-        "lyrics_stream_seconds": 2.0,
-        "lyrics_stream_max_len": 18,
         "lyrics_import": [],
     }
+
+
+def lyric_char(index: int) -> str:
+    """逐字歌词专用：第 index 个「字」（CJK 单字，含空格由调用方指定）。"""
+    return chr(0x4E00 + index)
 
 
 START = (100, 64, 200)
 
 
 def make_world(direction="east", lyric_ticks=(0, 5, 10, 20, 30), follow=True,
-               stream=False, texts=None, duration=0, max_tick=30, rng=None,
-               **overrides):
-    """生成音乐链 + 歌词链，返回所有中间结果。"""
+               texts=None, duration=5, max_tick=30, rng=None, **overrides):
+    """生成音乐链 + 歌词链，返回所有中间结果。
+
+    duration 默认 5 > 断句阈值 4，所以每个字都会独立成句。
+    """
     virtual_layers, layer_to_group = make_layers()
     config = base_config()
-    config.update({"lyrics_follow": follow, "lyrics_stream": stream})
+    config.update({"lyrics_follow": follow})
     config.update(overrides)
     if texts is None:
-        texts = [f"L{tick}" for tick in lyric_ticks]
+        texts = [lyric_char(index) for index in range(len(lyric_ticks))]
     config["lyrics_import"] = [
         {"tick": tick, "text": text, "duration": duration}
         for tick, text in zip(lyric_ticks, texts)
@@ -126,7 +136,7 @@ def make_world(direction="east", lyric_ticks=(0, 5, 10, 20, 30), follow=True,
     bottom = find_structure_bottom(music_cmds)
     result = build_lyrics_chain(
         virtual_layers, group_offset_dict, START, direction, max_tick, config,
-        struct_bottom_y=bottom, tempo=13, rng=rng,
+        struct_bottom_y=bottom, rng=rng,
     )
     return {
         "config": config,
@@ -202,6 +212,18 @@ def parse_segments(command):
     return segments, options
 
 
+def segment_chars(segment):
+    """解析段内 chars= 时间表 -> [(字start, 字duration), ...]。"""
+    for option in segment["opts"]:
+        if option.startswith("chars="):
+            items = []
+            for chunk in option[len("chars="):].split(","):
+                start, duration = chunk.split(":")
+                items.append((int(start), int(duration)))
+            return items
+    return []
+
+
 class Checks:
     def __init__(self):
         self.passed = 0
@@ -248,14 +270,24 @@ def test_command_shape():
 
     segments, options = parse_segments(text)
     chk.ok(len(segments) == 5, f"段数 {len(segments)} != 5")
-    chk.ok(all(segment["duration"] >= 1 for segment in segments), "duration 必须 ≥ 1")
-    chk.ok(all(segment["text"].startswith("L") for segment in segments),
-           f"文字内容错误: {[s['text'] for s in segments]}")
+    chk.ok(all(segment["duration"] == 0 for segment in segments),
+           "逐字模式段 duration 必须写 0（由 chars= 推导）")
+    chk.ok(all(visible_length(segment["text"]) == 1 for segment in segments),
+           f"每段应只有一个字: {[s['text'] for s in segments]}")
+    chk.ok(all(any(opt.startswith("chars=") for opt in segment["opts"])
+               for segment in segments), "每段都必须带 chars= 时间表")
+    chk.ok(all(len(segment_chars(segment)) == 1 for segment in segments),
+           "单字句的 chars= 应恰好 1 项")
     chk.ok(f"towards={TEXT_TOWARDS_YAW['east']},0,0" in options,
            f"缺少朝向: {options}")
     chk.ok("force=true" in options, f"缺少 force=true: {options}")
     chk.ok(any(option.startswith("color=") for option in options), f"缺少 color: {options}")
     chk.ok(any(option.startswith("scale=") for option in options), f"缺少 scale: {options}")
+    chk.ok("enter=0" in options, f"逐字模式默认 enter 应为 0: {options}")
+    chk.ok("exit=3" in options, f"逐字模式默认 exit 应为 3: {options}")
+    chk.ok("in=scale:enlarge" in options, f"默认入场动画应为 scale:enlarge: {options}")
+    chk.ok("typewriter" not in " ".join(options),
+           f"逐字模式不能使用 typewriter: {options}")
 
     # 命令方块位于结构最低方块下方
     chk.ok(coord[1] == world["bottom"] - 1,
@@ -276,7 +308,7 @@ def test_timing_and_position():
     all_ok = True
     for direction in ("east", "west", "south", "north"):
         chk = Checks()
-        world = make_world(direction=direction)
+        world = make_world(direction=direction, lyrics_start_lead_ticks=0)
         result = world["result"]
         chk.ok(result is not None, "歌词链未生成")
         if not result:
@@ -322,7 +354,7 @@ def test_timing_and_position():
 
     # 固定模式：所有段的链轴坐标相同（fixed_tick=15 落在 tick 10 与 20 之间）
     chk = Checks()
-    world = make_world(follow=False)
+    world = make_world(follow=False, lyrics_start_lead_ticks=0)
     coord, _, text = chain_entries(world["result"]["commands"])[0]
     segments, _ = parse_segments(text)
     axis = {coord[0] + segment["x"] for segment in segments}
@@ -340,6 +372,28 @@ def test_timing_and_position():
     return all_ok
 
 
+# ── 测试 2b：歌词相对音乐提前显示 ────────────────────────────
+
+def test_start_lead():
+    print("测试 2b：歌词提前显示（默认 4 歌曲 tick = 8 游戏 tick）")
+    chk = Checks()
+
+    def start_of(lead, tick=20):
+        world = make_world(lyric_ticks=(tick,), lyrics_start_lead_ticks=lead)
+        _, _, text = chain_entries(world["result"]["commands"])[0]
+        return parse_segments(text)[0][0]["start"]
+
+    base = start_of(0)
+    chk.ok(base == 2 * 20 + 2, f"不提前时的 start 错误: {base}")
+    chk.ok(start_of(1) == base - 2, f"提前 1 歌曲 tick 应早 2 游戏 tick: {start_of(1)}")
+    chk.ok(start_of(4) == base - 8, f"提前 4 歌曲 tick 应早 8 游戏 tick: {start_of(4)}")
+    chk.ok(start_of(4) > 0, "提前后 start 仍应为正数")
+
+    # 来不及提前的句子不能写出负数 tick
+    chk.ok(start_of(4, tick=0) == 0, f"tick 0 的句子应被夹到 0: {start_of(4, tick=0)}")
+    return chk.report("start-lead")
+
+
 # ── 测试 3：文字清洗 ─────────────────────────────────────────
 
 def test_text_sanitize():
@@ -352,60 +406,118 @@ def test_text_sanitize():
     chk.ok(sanitize_text("a\nb\tc") == "abc", "换行/制表符未丢弃")
     chk.ok(sanitize_text("§c红&6色") == "§c红&6色", "颜色码不应被改动")
 
-    # 命令里不出现裸分隔符
-    world = make_world(texts=["a b", "c|d", "e;f", "g,h", "i\nj"])
+    # 命令里不出现裸分隔符（逐字数据仍然是一字一条，只测特殊字符）
+    world = make_world(texts=[" ", "|", ";", ",", "a"])
     _, _, text = chain_entries(world["result"]["commands"])[0]
     segments, _ = parse_segments(text)
     chk.ok(len(segments) == 5, f"清洗后段数 {len(segments)} != 5")
     chk.ok(all(" " not in segment["text"] for segment in segments), "段内文字仍含空格")
+    chk.ok(all(not ({",", ";", "|"} & set(segment["text"])) for segment in segments),
+           f"段内仍有裸分隔符: {[s['text'] for s in segments]}")
+    chk.ok(segments[0]["text"] == "_", f"空格应写成 _: {segments[0]['text']}")
+    # chars 项数仍按「可见字符」算：空格算 1 个
+    chk.ok(all(len(segment_chars(segment)) == 1 for segment in segments),
+           "清洗后 chars= 项数应与可见字符数（空格算 1）一致")
     return chk.report("sanitize")
 
 
-# ── 测试 4：流式合并 ─────────────────────────────────────────
+# ── 测试 4：逐字断句与 chars= 时间表 ─────────────────────────
 
-def test_streaming():
-    print("测试 4：流式合并（累积成句 + 逐字入场）")
+def test_char_sentences():
+    print("测试 4：逐字断句（duration > threshold）与 chars= 时间表")
     chk = Checks()
     config = base_config()
-    config.update({"lyrics_stream": True, "lyrics_stream_seconds": 2.0,
-                   "lyrics_stream_max_len": 18})
 
-    chk.ok(stream_threshold_ticks({"lyrics_stream_seconds": 2.0}, 13) == 26,
-           "阈值换算错误（应为 26 tick）")
-    chk.ok(stream_threshold_ticks({"lyrics_stream_seconds": 1.0}, 2) == 2,
-           "阈值换算错误（应为 2 tick）")
+    # 文档第 10 节的示例：好(12) 与 睡(20) 是长音 → 只切成 2 句
+    entries = [(100, "今", 3), (103, "天", 3), (106, " ", 2), (108, "真", 3),
+               (111, "好", 12), (123, "我", 3), (126, "还", 3), (129, "没", 3),
+               (132, "睡", 20)]
+    sentences = break_sentences(entries, 4)
+    chk.ok([[item[1] for item in sentence] for sentence in sentences]
+           == [["今", "天", " ", "真", "好"], ["我", "还", "没", "睡"]],
+           f"断句结果错误: {[[item[1] for item in s] for s in sentences]}")
 
-    entries = [(0, "A", 0), (2, "B", 0), (4, "C", 0), (100, "E", 0), (102, "F", 0)]
-    segments = build_display_segments(entries, config, tempo=5.0)
-    chk.ok([(s["tick"], s["text"]) for s in segments] == [(0, "ABC"), (100, "EF")],
-           f"流式合并结果错误: {[(s['tick'], s['text']) for s in segments]}")
-    chk.ok(all(s["enter_override"] for s in segments), "流式段应按段长覆盖入场时长")
-    chk.ok(all(s["duration"] >= 1 and s["enter"] >= 1 for s in segments), "时长必须 ≥ 1")
+    # 严格大于：duration == threshold 不断句，threshold + 1 才断
+    chk.ok(len(break_sentences([(0, "a", 4), (2, "b", 4), (4, "c", 4)], 4)) == 1,
+           "duration == threshold 不应断句")
+    chk.ok(len(break_sentences([(0, "a", 4), (2, "b", 5), (4, "c", 4)], 4)) == 2,
+           "duration == threshold + 1 应断句")
 
-    # 长度上限触发断段
-    limited = build_display_segments(
-        [(0, "A", 0), (2, "B", 0), (4, "C", 0), (6, "D", 0)],
-        dict(config, lyrics_stream_max_len=3), tempo=5.0)
-    chk.ok([s["text"] for s in limited] == ["ABC", "D"],
-           f"长度上限切段错误: {[s['text'] for s in limited]}")
+    # 阈值很大 → 整首一句
+    chk.ok(len(break_sentences(entries, 72000)) == 1, "阈值 72000 应只切成一句")
 
-    # 关闭流式时逐条显示
-    plain = build_display_segments(entries, dict(config, lyrics_stream=False), tempo=5.0)
-    chk.ok([s["text"] for s in plain] == ["A", "B", "C", "E", "F"],
-           f"非流式结果错误: {[s['text'] for s in plain]}")
-    chk.ok(not any(s["enter_override"] for s in plain), "非流式不应覆盖入场时长")
+    # 标点断句默认关闭，可通过开关打开
+    punctuated = [(0, "你", 3), (2, "好", 1), (4, "，", 1), (6, "世", 3), (8, "界", 1)]
+    chk.ok(len(break_sentences(punctuated, 4, False)) == 1, "标点断句默认应关闭")
+    chk.ok(len(break_sentences(punctuated, 4, True)) == 2, "开启后标点应断句")
 
-    # 命令里：全局带 in=，流式段只覆盖 enter
-    world = make_world(lyric_ticks=(0, 2, 4), texts=["第", "一", "句"], stream=True)
+    # 每句字数上限：写满 N 字也断句（与长音规则叠加）
+    long_line = [(index, lyric_char(index), 3) for index in range(10)]
+    grouped = [len(group) for group in break_sentences(long_line, 4, False, 4)]
+    chk.ok(grouped == [4, 4, 2], f"字数上限断句错误: {grouped}")
+    chk.ok(len(break_sentences(long_line, 4, False, 0)) == 1, "0 应表示不限字数")
+    # 长音比字数上限更早触发：第 3 字是长音 → 句子在第 3 字结束
+    mixed = [(0, "a", 3), (2, "b", 3), (4, "c", 9), (6, "d", 3), (8, "e", 3)]
+    chk.ok([len(group) for group in break_sentences(mixed, 4, False, 4)] == [3, 2],
+           f"长音与字数上限叠加错误: {[len(g) for g in break_sentences(mixed, 4, False, 4)]}")
+    # 默认上限 18：20 个字断成 18 + 2
+    twenty = [(index, lyric_char(index), 3) for index in range(20)]
+    chk.ok([len(group) for group in break_sentences(
+        twenty, 4, False, config["lyrics_max_chars"])] == [18, 2],
+        "默认 18 字上限未生效")
+    # build_char_segments 同样按配置的字数上限断句
+    chk.ok([len(segment["chars"]) for segment in build_char_segments(
+        long_line, dict(config, lyrics_max_chars=3))] == [3, 3, 3, 1],
+        "build_char_segments 未按字数上限断句")
+    # 命令里也应体现字数断句
+    world = make_world(lyric_ticks=tuple(range(0, 12, 2)), duration=3,
+                       lyrics_char_threshold=4, lyrics_max_chars=2)
     _, _, text = chain_entries(world["result"]["commands"])[0]
-    segments_out, options = parse_segments(text)
-    chk.ok(len(segments_out) == 1, f"流式应合并成 1 段，实际 {len(segments_out)}")
-    chk.ok(segments_out[0]["text"] == "第一句",
+    segments_out, _ = parse_segments(text)
+    chk.ok([visible_length(segment["text"]) for segment in segments_out] == [2, 2, 2],
+           f"命令里的字数断句错误: {[s['text'] for s in segments_out]}")
+
+    # chars= 时间表：字start / 字duration 与歌词数据一致（1 个音乐 tick = 2 游戏 tick）
+    segments = build_char_segments(entries, config)
+    chk.ok(len(segments) == 2, f"应生成 2 句，实际 {len(segments)}")
+    first = segments[0]
+    chk.ok(first["text"] == "今天_真好", f"句子文字错误: {first['text']}")
+    chk.ok(first["chars"] == [(0, 6), (6, 6), (12, 4), (16, 6), (22, 24)],
+           f"第一句 chars 错误: {first['chars']}")
+    chk.ok(segments[1]["chars"] == [(0, 6), (6, 6), (12, 6), (18, 40)],
+           f"第二句 chars 错误: {segments[1]['chars']}")
+    chk.ok(first["span"] == 22 + 24, f"句长错误: {first['span']}")
+    chk.ok(all(segment["duration"] == 0 for segment in segments),
+           "段 duration 必须为 0（由模组按时间表推导）")
+    chk.ok(all(len(segment["chars"]) == visible_length(segment["text"])
+               for segment in segments),
+           "chars= 项数必须等于句子可见字符数（空格算 1）")
+
+    # 命令里：一句一个段，段 duration 写 0，chars= 在段内
+    world = make_world(lyric_ticks=(0, 2, 4), duration=5)
+    _, _, text = chain_entries(world["result"]["commands"])[0]
+    segments_out, _ = parse_segments(text)
+    chk.ok(len(segments_out) == 3, f"每字都是长音 → 3 段，实际 {len(segments_out)}")
+    chk.ok(all(segment["duration"] == 0 for segment in segments_out),
+           "命令里的段 duration 应写 0")
+    chk.ok(all(len(segment_chars(segment)) == 1 for segment in segments_out),
+           "单字句的 chars= 应为 1 项")
+
+    # 调大阈值 → 连续字合并成一句，chars 项数随之增加
+    world = make_world(lyric_ticks=(0, 2, 4), duration=2,
+                       lyrics_char_threshold=2)
+    _, _, text = chain_entries(world["result"]["commands"])[0]
+    segments_out, _ = parse_segments(text)
+    chk.ok(len(segments_out) == 1, f"duration == 阈值 时不应断句，实际 {len(segments_out)} 段")
+    chk.ok(segments_out[0]["text"] == "".join(lyric_char(i) for i in range(3)),
            f"合并文字错误: {segments_out[0]['text']}")
-    chk.ok(any(opt.startswith("enter=") for opt in segments_out[0]["opts"]),
-           f"流式段应覆盖 enter: {segments_out[0]['opts']}")
-    chk.ok("in=typewriter:left" in options, f"全局缺少入场动画: {options}")
-    return chk.report("stream")
+    chk.ok(segment_chars(segments_out[0]) == [(0, 4), (4, 4), (8, 4)],
+           f"合并后 chars 错误: {segment_chars(segments_out[0])}")
+
+    # 生成侧同样拒绝非法数据（不崩溃，直接跳过歌词生成）
+    world = make_world(lyric_ticks=(0, 2), duration=0)
+    chk.ok(world["result"] is None, "duration = 0 时应跳过歌词生成")
+    return chk.report("chars")
 
 
 # ── 测试 4b：保持距离 / 随机抖动 / 动画选项 ───────────────────
@@ -465,10 +577,20 @@ def test_lead_and_jitter():
            and float(segment["z"]).is_integer(), "未开启抖动时坐标应为整数")
 
     # 动画选项：全局 in= / out=
-    world = make_world(lyrics_anim_in="wipe:left", lyrics_anim_out="scale:shrink")
+    # 逐字模式可用的动画正常写入
+    world = make_world(lyrics_anim_in="slide:up,scale:enlarge", lyrics_anim_out="scale:shrink")
     _, options = parse_segments(chain_entries(world["result"]["commands"])[0][2])
-    chk.ok("in=wipe:left" in options, f"入场动画未写入: {options}")
+    chk.ok("in=slide:up,scale:enlarge" in options, f"入场动画未写入: {options}")
     chk.ok("out=scale:shrink" in options, f"出场动画未写入: {options}")
+
+    # 与 chars= 冲突的动画会被剔除（否则模组直接报错）
+    world = make_world(lyrics_anim_in="wipe:left,slide:up", lyrics_anim_out="typewriter:left")
+    _, options = parse_segments(chain_entries(world["result"]["commands"])[0][2])
+    chk.ok("in=slide:up" in options, f"禁用动画未剔除干净: {options}")
+    chk.ok(not any("wipe" in opt or "typewriter" in opt for opt in options),
+           f"wipe/typewriter 不应出现在命令里: {options}")
+    chk.ok(not any(opt.startswith("out=") for opt in options),
+           f"出场动画全是禁用项时不应写入 out=: {options}")
 
     # 关闭动画时不写 in= / out=
     world = make_world(lyrics_anim_in="", lyrics_anim_out="")
@@ -509,8 +631,8 @@ def test_repeater_modes():
         layer_to_group = {0: 0}
         config = base_config()
         config["uniform_repeater_mode"] = uniform
-        config["lyrics_import"] = [{"tick": tick, "text": f"L{tick}", "duration": 0}
-                                   for tick in ticks]
+        config["lyrics_import"] = [{"tick": tick, "text": lyric_char(index), "duration": 5}
+                                   for index, tick in enumerate(ticks)]
 
         music_cmds, _ = build_all_commands_virtual(
             virtual_layers, layer_to_group, [(0, 0)], START, "east", max_tick,
@@ -593,7 +715,7 @@ def test_layout_and_placement():
         bottom = find_structure_bottom(music_cmds)
         result = build_lyrics_chain(
             virtual_layers, group_offset_dict, START, "east", 30, world["config"],
-            struct_bottom_y=bottom, tempo=13)
+            struct_bottom_y=bottom)
         chk.ok(result is not None, f"{style}: 歌词链未生成")
         if not result:
             continue
@@ -618,9 +740,9 @@ def test_layout_and_placement():
 def test_batching():
     print("测试 6：超过命令长度上限时自动分批")
     chk = Checks()
-    ticks = list(range(0, 600, 2))
-    texts = ["长" * 120 for _ in ticks]
-    world = make_world(lyric_ticks=ticks, texts=texts, max_tick=600)
+    # 每个字都是长音 → 一字一句，1200 句足以超过单条命令上限
+    ticks = list(range(0, 2400, 2))
+    world = make_world(lyric_ticks=ticks, max_tick=30, lyrics_start_lead_ticks=0)
     result = world["result"]
     chk.ok(result is not None, "歌词链未生成")
     if not result:
@@ -638,7 +760,7 @@ def test_batching():
     ids = {option for _, _, text in entries for option in text.split(" ") if option.startswith("id=")}
     chk.ok(len(ids) == len(entries), f"分批 id 不唯一: {sorted(ids)}")
 
-    # 段数守恒：所有批次加起来等于原始字幕条数
+    # 段数守恒：所有批次加起来等于原始句子数
     total = sum(len(parse_segments(text)[0]) for _, _, text in entries)
     chk.ok(total == len(ticks), f"段总数 {total} != {len(ticks)}")
 
@@ -688,6 +810,41 @@ def test_lyrics_json_v2():
             chk.ok("formatVersion 2" in str(exc), f"旧版报错信息不清晰: {exc}")
     finally:
         os.remove(old)
+
+    # 一字一条目：多字条目直接报错
+    multi = _write_temp_json({"type": "noteblock-web-lyrics", "formatVersion": 2,
+                              "lyrics": [{"tick": 0, "lane": 0, "text": "今天", "duration": 4}]})
+    try:
+        try:
+            load_lyrics_json(multi)
+            chk.ok(False, "多字条目应报错")
+        except ValueError as exc:
+            chk.ok("一字一条记录" in str(exc), f"多字报错信息不清晰: {exc}")
+    finally:
+        os.remove(multi)
+
+    # duration 为 0 也应报错（不再有全局兜底时长）
+    zero = _write_temp_json({"type": "noteblock-web-lyrics", "formatVersion": 2,
+                             "lyrics": [{"tick": 0, "lane": 0, "text": "今", "duration": 0}]})
+    try:
+        try:
+            load_lyrics_json(zero)
+            chk.ok(False, "duration = 0 应报错")
+        except ValueError as exc:
+            chk.ok("duration" in str(exc), f"duration 报错信息不清晰: {exc}")
+    finally:
+        os.remove(zero)
+
+    # 空格条目合法（可见字符 1 个），颜色码不占字符
+    space = _write_temp_json({"type": "noteblock-web-lyrics", "formatVersion": 2,
+                              "lyrics": [{"tick": 0, "lane": 0, "text": " ", "duration": 2},
+                                         {"tick": 2, "lane": 0, "text": "§6今", "duration": 2}]})
+    try:
+        entries = load_lyrics_json(space)
+        chk.ok(entries == [(0, " ", 2), (2, "§6今", 2)],
+               f"空格 / 颜色码条目被错误处理: {entries}")
+    finally:
+        os.remove(space)
     return chk.report("v2json")
 
 
@@ -731,7 +888,7 @@ def test_lyrics_beyond_song_length():
     print("测试 9：歌词晚于歌曲结尾时应全部生成")
     chk = Checks()
     lyric_ticks = (0, 5, 10, 20, 30, 40)
-    world = make_world(lyric_ticks=lyric_ticks, max_tick=20)
+    world = make_world(lyric_ticks=lyric_ticks, max_tick=20, lyrics_start_lead_ticks=0)
     result = world["result"]
     chk.ok(result is not None, "歌词链未生成")
     if not result:
@@ -742,7 +899,7 @@ def test_lyrics_beyond_song_length():
     segments, _ = parse_segments(text)
     chk.ok(len(segments) == len(lyric_ticks),
            f"尾段歌词被截断：只生成 {len(segments)} 条，应为 {len(lyric_ticks)} 条")
-    chk.ok(segments[-1]["text"] == f"L{lyric_ticks[-1]}",
+    chk.ok(segments[-1]["text"] == lyric_char(len(lyric_ticks) - 1),
            f"最后一条歌词错误: {segments[-1]['text']}")
     # 最后一条仍按 2 tick/音乐 tick 前进
     chk.ok(segments[-1]["start"] == 2 * lyric_ticks[-1] + 2,
@@ -801,8 +958,8 @@ def test_full_structure():
     notes = [note for layer in virtual_layers for note in layer["notes"]]
     song = FakeSong(notes, [FakeLayer(0, "钢琴"), FakeLayer(1, "吉他")])
     config = base_config()
-    config["lyrics_import"] = [{"tick": tick, "text": f"L{tick}", "duration": 0}
-                               for tick in (0, 10, 20)]
+    config["lyrics_import"] = [{"tick": tick, "text": lyric_char(index), "duration": 5}
+                               for index, tick in enumerate((0, 10, 20))]
     config["particles_enabled"] = True
     config["particles_layers"] = [0]
 
@@ -858,8 +1015,9 @@ def main():
     results = [
         test_command_shape(),
         test_timing_and_position(),
+        test_start_lead(),
         test_text_sanitize(),
-        test_streaming(),
+        test_char_sentences(),
         test_lead_and_jitter(),
         test_repeater_modes(),
         test_layout_and_placement(),

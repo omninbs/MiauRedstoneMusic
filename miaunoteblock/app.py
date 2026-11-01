@@ -6,7 +6,8 @@
 - 歌词 → 一个脉冲命令方块里的 ``/mpe text chain``（MiauParticleEffects 粒子字幕）
 - 粒子 → 每个参与组的 ``/mpe noteblock chain`` 弹力球
 
-配置只存在于内存中：不读取也不写入任何配置文件。
+配置按**歌曲文件路径**保存到安装目录的 ``configs/``（一个路径一个 JSON），
+再打开同一首歌时自动恢复。
 """
 
 import json
@@ -36,7 +37,12 @@ pynbs.Parser.read_string = _patched_read_string
 
 from pynbs import read as nbs_read
 
-from .config import default_config
+from .config import (
+    CONFIG_DIR_NAME,
+    config_path_for,
+    load_song_config,
+    save_song_config,
+)
 from .console import ask_number, clear_screen, terminal_columns
 from .constants import Ansi, DIR_OFFSET, VERSION
 from .generation import (
@@ -414,8 +420,12 @@ def print_summary(config: dict, virtual_layers: List[dict], layer_to_group: Dict
 
     lyrics_count = len(config.get("lyrics_import") or [])
     if lyrics_count:
+        max_chars = int(config.get("lyrics_max_chars") or 0)
+        char_limit = f" +{max_chars}字" if max_chars > 0 else ""
         print(f"  歌词 {lyrics_count} 条 · "
-              f"流式{'开' if config.get('lyrics_stream') else '关'} · "
+              f"断句阈值 {config.get('lyrics_char_threshold')} tick"
+              f"{' +标点' if config.get('lyrics_break_on_punctuation') else ''}"
+              f"{char_limit} · 提前 {config.get('lyrics_start_lead_ticks', 4)} tick · "
               f"颜色 {config.get('lyrics_color')} · 字号 {config.get('lyrics_scale')} · "
               f"保持距离 {config.get('lyrics_lead_distance')}")
     else:
@@ -512,7 +522,6 @@ def build_commands(config: dict, song, virtual_layers: List[dict],
         lyrics = build_lyrics_chain(
             virtual_layers, group_offset_dict, (0, 0, 0), direction, max_tick, config,
             struct_bottom_y=find_structure_bottom(commands),
-            tempo=getattr(song.header, "tempo", None),
         )
 
     # 启动链：歌词命令方块的激活红石块排在前面（越早执行越好），随后每组一格
@@ -568,14 +577,35 @@ def _load_song(path: str):
 
 def _interactive() -> None:
     clear_screen()
-    config = default_config()
     print(Ansi.title("══════ MiauRedstoneMusic · NBS → 红石音乐结构 ══════"))
     print(Ansi.dim(f"作者: COM1919 | 版本: {VERSION}"))
 
-    nbs_path = input(Ansi.prompt("NBS 文件路径 (默认 song.nbs): ")).strip().strip('"').strip("'")
-    song = _load_song(nbs_path or "song.nbs")
+    raw_path = input(Ansi.prompt("NBS 文件路径 (默认 song.nbs): ")).strip().strip('"').strip("'")
+    song_path = raw_path or "song.nbs"
+    song = _load_song(song_path)
     if song is None:
         return
+
+    # 同一首歌（同一路径）共用一个配置文件，换歌就换配置
+    config = load_song_config(song_path)
+    config_file = config_path_for(song_path)
+    if config_file.exists():
+        print(Ansi.success(f"已恢复这首歌的配置：{CONFIG_DIR_NAME}/{config_file.name}"))
+    else:
+        print(Ansi.info(f"这首歌还没有配置，修改设置后会保存到 "
+                        f"{CONFIG_DIR_NAME}/{config_file.name}"))
+
+    saved_snapshot = {"json": json.dumps(config, sort_keys=True, ensure_ascii=False)}
+
+    def save_config() -> None:
+        """配置有变化才写盘（按歌曲路径分文件）。"""
+        snapshot = json.dumps(config, sort_keys=True, ensure_ascii=False)
+        if snapshot == saved_snapshot["json"]:
+            return
+        written = save_song_config(song_path, config,
+                                   getattr(song.header, "song_name", "") or "")
+        if written:
+            saved_snapshot["json"] = snapshot
 
     print(Ansi.title("\n=== 音轨预处理 ==="))
     print("  [1] 先垂直压缩，再按乐器排序（打击乐在后，推荐）")
@@ -613,6 +643,7 @@ def _interactive() -> None:
             edit_stereo_layers(song, config)
             virtual_layers = build_virtual_layers(song, config.get('stereo_layers', []))
             if not virtual_layers:
+                save_config()
                 print(Ansi.error("没有可用音轨，无法继续"))
                 return
             # 虚拟层变了，分组映射要重建
@@ -621,7 +652,7 @@ def _interactive() -> None:
         elif choice == "4":
             edit_group_staircase_modes(config, layer_to_group, virtual_layers, song)
         elif choice == "5":
-            edit_lyrics_menu(config, getattr(song.header, "tempo", None))
+            edit_lyrics_menu(config)
         elif choice == "6":
             edit_particle_settings(config, virtual_layers, layer_to_group)
         elif choice == "7":
@@ -633,13 +664,17 @@ def _interactive() -> None:
                 print(Ansi.success("已切换为合并模式：每 4 个空白 tick 并成一个 delay=4 中继器，"
                                    "结构更短（歌词/粒子会自动跟随压缩后的布局）"))
         elif choice == "8":
-            print(Ansi.info("已退出（配置不会保存）"))
+            save_config()
+            print(Ansi.info(f"已退出（配置已按歌曲保存到 "
+                            f"{CONFIG_DIR_NAME}/{config_file.name}）"))
             return
         elif not choice:
             generate(config, song, virtual_layers, layer_to_group)
+            save_config()
             input(Ansi.prompt("按回车返回菜单..."))
         else:
             print(Ansi.error("无效选项"))
+        save_config()
 
 
 def main() -> None:

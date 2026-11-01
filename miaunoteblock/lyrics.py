@@ -1,38 +1,48 @@
-"""歌词导入与 /mpe text chain 粒子字幕生成。
+"""歌词导入与 /mpe text chain 逐字粒子字幕生成。
 
 生成器只在结构底部放一个（命令过长时多个）**脉冲**命令方块，写入一条
 
-    /mpe text chain ~~~ x,y,z,start,duration,文字[;段内选项]|... 选项
+    /mpe text chain ~~~ x,y,z,start,0,文字;chars=0:4,2:4,...|... 选项
 
-由 MiauParticleEffects 模组按时间轴在指定位置显示歌词。
-结构里不再需要整条中继器歌词链：方块占用、断链风险和生成时间都大幅下降。
+模组按 ``chars=`` 时间表把每个字一个个显示出来（逐字模式）。
+一份歌词先按**长音**（``duration > 断句阈值``）切成句子，一句 = 一个段，
+整首歌仍然只用一条命令。
 
 坐标约定：
 - 锚点一律写 ``~~~``（命令方块自身方块坐标），段里的 x/y/z 是相对锚点的偏移，
   所以结构整体平移/复制后无需改数据。
 - ``start`` 是相对「命令方块执行那一刻」的绝对 tick（20 tick = 1 秒），
   已补上命令方块自身的执行延迟，并已对齐主音乐链的计时原点。
+- ``chars=`` 里的 ``字start`` / ``字duration`` 也换算成游戏 tick：
+  歌词数据的一个 NBS tick = 2 游戏 tick（与主音乐链的计时一致）。
 """
 
 import bisect
 import json
 import random
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from .console import ask_number
 from .constants import Ansi, DIR_OFFSET, SIDE_AXIS, TEXT_TOWARDS_YAW
 from .generation import chain_valid_ticks, event_offsets
 
-DEFAULT_STREAM_SECONDS = 2.0
-DEFAULT_STREAM_MAX_LEN = 18
-DEFAULT_DURATION = 20
-DEFAULT_ENTER = 5
-DEFAULT_EXIT = 5
+# 断句阈值（与歌词 duration 同单位：NBS tick）。duration 严格大于它就断句。
+DEFAULT_THRESHOLD = 4
+# 单句字数上限：达到这个字数也断句（0 = 不限）。与长音断句叠加生效。
+DEFAULT_MAX_CHARS = 18
+# 歌词相对音乐**提前**显示多少歌曲 tick（内部换算成游戏 tick，0 = 不提前）
+DEFAULT_START_LEAD = 4
+DEFAULT_ENTER = 0          # 每个字的入场动画时长（tick），逐字模式下建议 0~2
+DEFAULT_EXIT = 3           # 每个字的退场动画时长（tick）
 DEFAULT_SCALE = 10.0
 DEFAULT_Y_OFFSET = 5
 DEFAULT_CHAIN_Y_OFFSET = 1
 DEFAULT_LEAD_DISTANCE = 16
-DEFAULT_ANIM_IN = "typewriter:left"
+DEFAULT_ANIM_IN = "scale:enlarge"
+# 逐字模式下与 chars= 时间表冲突、模组会直接报错的动画类别
+FORBIDDEN_IN_CHAR_MODE = ("typewriter", "wipe", "spacing", "scatter")
+# 「标点断句」可选规则使用的标点（默认关闭）
+BREAK_PUNCTUATION = "，。！？、；：,.!?;:…—～"
 
 CHAIN_ANCHOR = "~~~"
 # 命令方块单条命令的长度上限（模组实测 32500，这里留出安全余量）
@@ -47,24 +57,72 @@ CHAIN_BLOCK_AXIS_BACK = 3
 # 多个命令方块沿侧向排开时的间距
 CHAIN_BLOCK_SIDE_GAP = 2
 
-# 可选的入场/出场动画：类别 -> 样式（见 mpe_docs 的「歌词链」一节）
+# 可选的入场/出场动画：类别 -> 样式（见 mpe_docs 的「歌词链」一节）。
+# 逐字模式下 typewriter / wipe / spacing / scatter 与 chars= 时间表冲突，
+# 模组会直接报错，因此不提供给用户选择。
 ANIMATION_STYLES = {
-    "typewriter": ["left", "right", "center"],
-    "wipe": ["left", "right", "up", "down"],
     "slide": ["up", "down", "left", "right"],
     "scale": ["shrink", "enlarge"],
     "zoom": ["in", "out"],
     "flip": ["horizontal", "vertical"],
     "rotate": ["roll", "yaw", "pitch"],
-    "scatter": ["gather", "burst"],
     "bounce": ["drop", "rise"],
     "drop": ["down", "up", "left", "right"],
-    "spacing": ["converge", "disperse"],
     "clarity": ["clear", "blur"],
 }
 
+# §x / &x 颜色码里 x 的合法取值
+_COLOR_CODE_CHARS = set("0123456789abcdefklmnorABCDEFKLMNOR")
+
 
 # ── 歌词数据解析 ─────────────────────────────────────────────
+
+def _is_color_code(text: str, index: int) -> bool:
+    """text[index] 起是否是一个颜色码（§x / &x）。"""
+    return (text[index] in "§&" and index + 1 < len(text)
+            and text[index + 1] in _COLOR_CODE_CHARS)
+
+
+def strip_color_codes(text: str) -> str:
+    """去掉颜色码，返回纯文字（用于字数判断与标点判断）。"""
+    out = []
+    index = 0
+    while index < len(text):
+        if _is_color_code(text, index):
+            index += 2
+            continue
+        out.append(text[index])
+        index += 1
+    return "".join(out)
+
+
+def visible_length(text: str) -> int:
+    """可见字符数：``§x`` / ``&x`` 颜色码不算，空格算一个。"""
+    return len(strip_color_codes(text))
+
+
+def validate_entries(entries: Sequence[Tuple[int, str, int]]) -> List[str]:
+    """逐字模式的输入校验，返回问题列表（空 = 合法）。
+
+    要求：一个字 = 一条记录（``duration ≥ 1``，``tick`` 非递减）。
+    多字条目无法给出可信的逐字时间表，直接报错让用户改歌词。
+    """
+    problems: List[str] = []
+    previous = None
+    for index, (tick, text, duration) in enumerate(entries, start=1):
+        label = f"第 {index} 条（tick {tick}，「{text}」）"
+        if tick < 0:
+            problems.append(f"{label} 的 tick 为负")
+        if previous is not None and tick < previous:
+            problems.append(f"{label} 的 tick 小于前一条（start 必须非递减）")
+        previous = tick
+        count = visible_length(text)
+        if count != 1:
+            problems.append(f"{label} 有 {count} 个可见字符，逐字模式要求一字一条记录")
+        if duration < 1:
+            problems.append(f"{label} 的 duration 为 {duration}，必须 ≥ 1（至少唱 1 tick）")
+    return problems
+
 
 def load_lyrics_json(path: str) -> List[Tuple[int, str, int]]:
     """读取编辑器导出的歌词 JSON（formatVersion 2）。
@@ -83,7 +141,10 @@ def load_lyrics_json(path: str) -> List[Tuple[int, str, int]]:
 
     编辑器支持 3 个文本轨道（lane），本工具只识别 lane 0，
     其它轨道有文本时给出警告并忽略。
-    返回 [(tick, 文字, 显示时长), ...]，按 tick 升序；时长为 0 表示使用全局设置。
+    返回 [(tick, 文字, 时长), ...]，按 tick 升序。
+
+    逐字模式要求**一字一条记录**（空格也算一个字），``duration ≥ 1``；
+    不满足时抛出 :class:`ValueError`，并在信息里列出前几条问题。
     """
     # utf-8-sig：兼容 Windows 记事本 / PowerShell 写出的带 BOM 文件
     with open(path, 'r', encoding='utf-8-sig') as f:
@@ -110,7 +171,7 @@ def load_lyrics_json(path: str) -> List[Tuple[int, str, int]]:
             lane = int(item.get("lane") or 0)
         except (TypeError, ValueError):
             lane = 0
-        text = str(item.get("text", "") or "").strip()
+        text = _clean_text(item.get("text", ""))
         if lane != 0:
             if text:
                 ignored_lanes += 1
@@ -125,11 +186,25 @@ def load_lyrics_json(path: str) -> List[Tuple[int, str, int]]:
             duration = 0
         if not text:
             continue
-        entries.append((tick, text, max(0, duration)))
+        entries.append((tick, text, duration))
     if ignored_lanes:
         print(Ansi.error(f"警告：lane 1/2 共 {ignored_lanes} 条文本，已忽略（本工具仅识别 lane 0）"))
     entries.sort(key=lambda item: item[0])
+    problems = validate_entries(entries)
+    if problems:
+        raise ValueError(_format_problems(problems))
     return entries
+
+
+def _clean_text(raw) -> str:
+    """去掉换行/制表符，但**保留空格**（空格在逐字模式里也算一个字）。"""
+    return str(raw or "").replace("\n", "").replace("\r", "").replace("\t", "")
+
+
+def _format_problems(problems: List[str]) -> str:
+    shown = problems[:5]
+    more = f"（还有 {len(problems) - len(shown)} 条）" if len(problems) > len(shown) else ""
+    return "歌词数据不符合逐字模式要求：" + "；".join(shown) + more
 
 
 def imported_entries(config: dict) -> List[Tuple[int, str, int]]:
@@ -145,64 +220,19 @@ def imported_entries(config: dict) -> List[Tuple[int, str, int]]:
             tick = int(item.get("tick"))
         except (TypeError, ValueError):
             continue
-        text = str(item.get("text") or "").strip()
+        text = _clean_text(item.get("text"))
         if not text:
             continue
         try:
             duration = int(item.get("duration") or 0)
         except (TypeError, ValueError):
             duration = 0
-        entries.append((tick, text, max(0, duration)))
+        entries.append((tick, text, duration))
     entries.sort(key=lambda entry: entry[0])
     return entries
 
 
 # ── 时间与分段 ───────────────────────────────────────────────
-
-def stream_threshold_ticks(config: dict, tempo: float) -> int:
-    """把「流式合并秒数」按歌曲速度换算成 tick 阈值。
-
-    歌曲速度 tempo 的单位是 note/s（1 秒 = tempo 个 tick），
-    相邻两次歌词事件间隔超过该阈值就视为两段，不再累积。
-    """
-    try:
-        seconds = float(config.get("lyrics_stream_seconds", DEFAULT_STREAM_SECONDS))
-    except (TypeError, ValueError):
-        seconds = DEFAULT_STREAM_SECONDS
-    try:
-        rate = float(tempo)
-    except (TypeError, ValueError):
-        rate = 10.0
-    if rate <= 0:
-        rate = 10.0
-    return max(1, int(round(seconds * rate)))
-
-
-def build_stream_segments(entries: List[Tuple[int, str, int]], threshold_ticks: int, max_len: int):
-    """提前分析歌词数据，把可以连读的事件合并成若干「流式段」。
-
-    entries 为 [(tick, 文字, 时长), ...]（已按 tick 升序）。
-    - 相邻事件间隔 > threshold_ticks：视为两段歌词，断段
-    - 本段累积字数将超过 max_len：断段
-    """
-    segments = []
-    current = []
-    current_len = 0
-    prev_tick = None
-    for tick, text, duration in entries:
-        if current:
-            gap = tick - prev_tick
-            if gap > threshold_ticks or current_len + len(text) > max_len:
-                segments.append(current)
-                current = []
-                current_len = 0
-        current.append((tick, text, duration))
-        current_len += len(text)
-        prev_tick = tick
-    if current:
-        segments.append(current)
-    return segments
-
 
 def _int_option(config: dict, key: str, default: int, minimum: int = None) -> int:
     try:
@@ -231,48 +261,66 @@ def _random_offset(limit: float, rng: random.Random) -> float:
     return rng.randint(-steps, steps) / 2
 
 
-def build_display_segments(entries: List[Tuple[int, str, int]], config: dict,
-                           tempo: float = None) -> List[dict]:
-    """把歌词条目转成「一条字幕」列表。
+def break_sentences(entries: Sequence[Tuple[int, str, int]], threshold: int,
+                    punctuation: bool = False,
+                    max_chars: int = 0) -> List[List[Tuple[int, str, int]]]:
+    """把逐字歌词切成句子（长音规则 + 可选的字数上限）。
 
-    每项为 {"tick", "text", "duration", "enter", "exit", "enter_override"}：
-    - 关闭流式：每个条目一条字幕，时长用条目自带值（0 则用 lyrics_duration）。
-    - 开启流式：相邻条目合并成一句完整歌词，入场时长占半段（配合 typewriter
-      就是逐字打出），避免「后一个字把前一个字顶掉」的老问题。
+    - ``duration > threshold`` 的字是**本句最后一个字**（断句发生在长音之后）；
+    - ``punctuation=True`` 时标点（``BREAK_PUNCTUATION``）也作为句末，默认关闭；
+    - ``max_chars > 0`` 时，句子累计到这个可见字数后当前字也作为句末
+      （``max_chars = 0`` 表示不限字数）；
+    - 长音字的 duration 不截断，整句会等它唱完才退场。
     """
-    global_duration = max(1, _int_option(config, "lyrics_duration", DEFAULT_DURATION, 1))
-    enter = _int_option(config, "lyrics_enter", DEFAULT_ENTER, 0)
-    exit_time = _int_option(config, "lyrics_exit", DEFAULT_EXIT, 0)
-    clean = [(int(tick), str(text), max(0, int(duration)))
-             for tick, text, duration in entries if str(text).strip()]
-    clean.sort(key=lambda item: item[0])
+    sentences: List[List[Tuple[int, str, int]]] = []
+    current: List[Tuple[int, str, int]] = []
+    count = 0
+    for entry in entries:
+        current.append(entry)
+        count += max(1, visible_length(entry[1]))
+        _, text, duration = entry
+        plain = strip_color_codes(text)
+        ends_sentence = duration > threshold or (
+            punctuation and bool(plain) and plain[0] in BREAK_PUNCTUATION)
+        if not ends_sentence and max_chars > 0 and count >= max_chars:
+            ends_sentence = True
+        if ends_sentence:
+            sentences.append(current)
+            current = []
+            count = 0
+    if current:
+        sentences.append(current)
+    return sentences
 
-    if not config.get("lyrics_stream"):
-        return [
-            {"tick": tick, "text": text,
-             "duration": duration if duration > 0 else global_duration,
-             "enter": enter, "exit": exit_time, "enter_override": False}
-            for tick, text, duration in clean
-        ]
 
-    max_len = max(1, _int_option(config, "lyrics_stream_max_len", DEFAULT_STREAM_MAX_LEN, 1))
-    threshold = stream_threshold_ticks(config, tempo)
+def build_char_segments(entries: Sequence[Tuple[int, str, int]], config: dict) -> List[dict]:
+    """把逐字歌词条目转成 ``/mpe text chain`` 的段列表（一个段 = 一句歌词）。
+
+    每项为 ``{"tick", "text", "chars", "count", "duration", "span"}``：
+
+    - ``chars`` = ``[(字start, 字duration), ...]``，已换算成游戏 tick，
+      ``字start`` 相对段 ``start``（首字 0），``字duration ≥ 1``；
+    - ``duration`` 恒为 0：逐字模式让模组按时间表推导整句生命周期；
+    - ``span`` = ``max(字start + 字duration)``，便于日志与测试。
+    """
+    threshold = _int_option(config, "lyrics_char_threshold", DEFAULT_THRESHOLD, 0)
+    max_chars = _int_option(config, "lyrics_max_chars", DEFAULT_MAX_CHARS, 0)
+    punctuation = bool(config.get("lyrics_break_on_punctuation", False))
     segments: List[dict] = []
-    for group in build_stream_segments(clean, threshold, max_len):
-        text = "".join(item[1] for item in group)
-        first_tick = group[0][0]
-        last_tick, _, last_duration = group[-1]
-        span = last_tick + (last_duration if last_duration > 0 else global_duration) - first_tick
-        span = max(1, span)
-        typing = max(1, span // 2)
+    for sentence in break_sentences(entries, threshold, punctuation, max_chars):
+        first_tick = sentence[0][0]
+        chars = []
+        for tick, _, duration in sentence:
+            rel = max(0, tick - first_tick)
+            chars.append((GAME_TICKS_PER_MUSIC_TICK * rel,
+                          GAME_TICKS_PER_MUSIC_TICK * max(1, duration)))
         segments.append({
             "tick": first_tick,
-            "text": text,
-            "duration": max(1, span - typing),
-            "enter": typing,
-            "exit": exit_time,
-            # 流式段的入场时长要按段长单独覆盖（配合 typewriter 才有逐字效果）
-            "enter_override": True,
+            "text": "".join(sanitize_text(item[1]) for item in sentence),
+            "chars": chars,
+            "count": len(sentence),
+            "duration": 0,
+            "span": max(start + length for start, length in chars),
         })
     return segments
 
@@ -305,6 +353,23 @@ def _fmt_number(value: float) -> str:
     return f"{rounded:.3f}".rstrip("0").rstrip(".")
 
 
+def _check_animation(anim: str, label: str) -> str:
+    """逐字模式会拒绝与 chars= 冲突的动画，这里提前剔除并提示。"""
+    kept = []
+    dropped = []
+    for item in anim.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if item.split(":")[0] in FORBIDDEN_IN_CHAR_MODE:
+            dropped.append(item)
+        else:
+            kept.append(item)
+    if dropped:
+        print(Ansi.error(f"警告：逐字模式不支持{label} {'、'.join(dropped)}（模组会报错），已忽略"))
+    return ",".join(kept)
+
+
 def _global_options(config: dict, direction: str) -> str:
     color = str(config.get("lyrics_color") or "white").replace(" ", "")
     try:
@@ -320,6 +385,8 @@ def _global_options(config: dict, direction: str) -> str:
     anim_in = config.get("lyrics_anim_in")
     anim_in = DEFAULT_ANIM_IN if anim_in is None else str(anim_in).replace(" ", "").strip()
     anim_out = str(config.get("lyrics_anim_out") or "").replace(" ", "").strip()
+    anim_in = _check_animation(anim_in, "入场动画")
+    anim_out = _check_animation(anim_out, "出场动画")
     if anim_in:
         options.append(f"in={anim_in}")
     if anim_out:
@@ -327,16 +394,22 @@ def _global_options(config: dict, direction: str) -> str:
     return " ".join(options)
 
 
+def _chars_string(chars: Sequence[Tuple[int, int]]) -> str:
+    """``chars=`` 时间表：``字start:字duration`` 用逗号连接。"""
+    return ",".join(f"{int(start)}:{int(duration)}" for start, duration in chars)
+
+
 def _segment_string(segment: dict, start_tick: int,
                     block_pos: Tuple[int, int, int]) -> str:
-    """拼一段：x,y,z,start,duration,文字[;段内选项]，坐标相对命令方块自身。"""
+    """拼一段：x,y,z,start,0,文字;chars=...（坐标相对命令方块自身）。
+
+    逐字模式下段 ``duration`` 固定写 0，由模组按时间表推导整句生命周期。
+    """
     px, py, pz = segment["pos"]
     bx, by, bz = block_pos
-    body = (f"{_fmt_number(px - bx)},{_fmt_number(py - by)},{_fmt_number(pz - bz)},"
-            f"{int(start_tick)},{int(segment['duration'])},{sanitize_text(segment['text'])}")
-    if segment.get("enter_override"):
-        body += f";enter={int(segment['enter'])}"
-    return body
+    return (f"{_fmt_number(px - bx)},{_fmt_number(py - by)},{_fmt_number(pz - bz)},"
+            f"{int(start_tick)},0,{segment['text']}"
+            f";chars={_chars_string(segment['chars'])}")
 
 
 def _pulse_command_block(pos: Tuple[int, int, int], command: str) -> str:
@@ -392,15 +465,16 @@ def build_lyrics_chain(
     max_tick: int,
     config: dict,
     struct_bottom_y: int = None,
-    tempo: float = None,
     rng: random.Random = None,
 ) -> Optional[dict]:
-    """构建 /mpe text chain 歌词链。
+    """构建逐字模式下的 /mpe text chain 歌词链。
 
     返回 {"commands", "blocks", "activations", "chain_y", "segments",
-    "batches", "end_tick"}；未导入歌词或没有落在范围内的歌词时返回 None。
+    "batches", "end_tick"}；未导入歌词、歌词不合法或没有落在范围内的歌词时返回 None。
     「导入歌词」即等于启用歌词功能。
 
+    - 歌词先按长音（``duration > lyrics_char_threshold``）断句，一句 = 一个段，
+      段内每个字带自己的 ``chars=`` 时间表；
     - 命令方块放在整个结构下方（``lyrics_chain_y_offset`` 层）起点之前，
       每批一个，彼此沿侧向排开；
     - 每个命令方块旁边都有红石块作为激活源，由调用方并入启动链
@@ -413,6 +487,13 @@ def build_lyrics_chain(
     entries = imported_entries(config)
     if not entries:
         print(Ansi.error("没有有效歌词，跳过歌词生成"))
+        return None
+
+    problems = validate_entries(entries)
+    if problems:
+        print(Ansi.error(_format_problems(problems)))
+        print(Ansi.dim("逐字模式要求一字一条记录（空格也算一个字）且 duration ≥ 1；"
+                       "请在歌词编辑器里改好后重新导入。"))
         return None
 
     origin_tick = _origin_tick(virtual_layers, max_tick)
@@ -479,12 +560,17 @@ def build_lyrics_chain(
     chain_offset = _int_option(config, "lyrics_chain_y_offset", DEFAULT_CHAIN_Y_OFFSET, 1)
     chain_y = struct_bottom_y - chain_offset
 
-    segments = build_display_segments(entries, config, tempo)
-    for segment in segments:
-        segment["pos"] = display_pos(segment["tick"])
+    threshold = _int_option(config, "lyrics_char_threshold", DEFAULT_THRESHOLD, 0)
+    max_chars = _int_option(config, "lyrics_max_chars", DEFAULT_MAX_CHARS, 0)
+    # 歌词比音乐慢一点，默认提前 4 个歌曲 tick（= 8 游戏 tick）显示
+    advance = GAME_TICKS_PER_MUSIC_TICK * _int_option(
+        config, "lyrics_start_lead_ticks", DEFAULT_START_LEAD, 0)
+    segments = build_char_segments(entries, config)
     if not segments:
         print(Ansi.error("没有可显示的歌词，跳过歌词生成"))
         return None
+    for segment in segments:
+        segment["pos"] = display_pos(segment["tick"])
 
     options = _global_options(config, direction)
     overhead = len(f"/mpe text chain {CHAIN_ANCHOR} ") + len(options) + 48  # 留出 id= 的余量
@@ -503,18 +589,30 @@ def build_lyrics_chain(
     current: List[dict] = []
     length = 0
     probe_pos = block_position(0)
+    oversized = 0
     # start 用 6 位数字估算，宁可高估也不要让真实命令超限
     for segment in segments:
-        piece_len = len(_segment_string(segment, 999999, probe_pos)) + (1 if current else 0)
+        base_len = len(_segment_string(segment, 999999, probe_pos))
+        if base_len + overhead > MAX_CHAIN_COMMAND_LEN:
+            # 单句就塞不进一个命令方块（阈值太小 / 句子太长），跳过并提示
+            oversized += 1
+            continue
+        piece_len = base_len + (1 if current else 0)
         if current and length + piece_len + overhead > MAX_CHAIN_COMMAND_LEN:
             batches.append(current)
             current = []
             length = 0
-            piece_len = len(_segment_string(segment, 999999, probe_pos))
+            piece_len = base_len
         current.append(segment)
         length += piece_len
     if current:
         batches.append(current)
+    if oversized:
+        print(Ansi.error(f"警告：{oversized} 句歌词单句就超过命令长度上限，已跳过；"
+                         f"请调大断句阈值（当前 {threshold} tick）让句子更短"))
+    if not batches:
+        print(Ansi.error("歌词句子全部超过命令长度上限，跳过歌词生成"))
+        return None
 
     batch_count = len(batches)
     commands: List[str] = []
@@ -531,7 +629,7 @@ def build_lyrics_chain(
         bias = batch_count + 1 - index
         pieces = [_segment_string(
             segment,
-            GAME_TICKS_PER_MUSIC_TICK * (segment["tick"] - origin_tick) + bias,
+            max(0, GAME_TICKS_PER_MUSIC_TICK * (segment["tick"] - origin_tick) + bias - advance),
             block_pos)
             for segment in batch]
         command = f"/mpe text chain {CHAIN_ANCHOR} " + "|".join(pieces)
@@ -545,10 +643,14 @@ def build_lyrics_chain(
         activations.append((block_pos[0] + dx, block_pos[1], block_pos[2] + dz))
         longest = max(longest, len(command))
 
-    mode = "流式合并" if config.get("lyrics_stream") else "逐条显示"
-    print(Ansi.success(f"歌词链已添加：{len(segments)} 条字幕（{mode}）-> "
+    total_chars = sum(segment["count"] for segment in segments)
+    print(Ansi.success(f"逐字歌词链已添加：{len(segments)} 句 / {total_chars} 字 -> "
                        f"{batch_count} 个脉冲命令方块，链层 Y={chain_y}"))
+    char_limit = f"、每句≤{max_chars} 字" if max_chars > 0 else ""
     print(Ansi.dim(f"最长命令 {longest} 字符（上限 {MAX_CHAIN_COMMAND_LEN}）；"
+                   f"断句阈值 {threshold} tick"
+                   f"{'（含标点断句）' if config.get('lyrics_break_on_punctuation') else ''}"
+                   f"{char_limit}；提前 {advance} 游戏 tick 显示；"
                    f"位置：{'跟随前进' if follow else '固定在结构中点'}；"
                    f"时间原点 tick {origin_tick}"))
     return {
@@ -573,18 +675,27 @@ def _lyrics_status(config: dict) -> str:
     entries = imported_entries(config)
     if not entries:
         return Ansi.dim("未导入歌词（导入即启用歌词字幕）")
-    stream = "开" if config.get("lyrics_stream") else "关"
+    threshold = _int_option(config, "lyrics_char_threshold", DEFAULT_THRESHOLD, 0)
+    punctuation = bool(config.get("lyrics_break_on_punctuation"))
+    if validate_entries(entries):
+        return (f"{len(entries)} 条歌词 · " + Ansi.dim("数据不符合逐字模式（一字一条 / duration ≥ 1）"))
+    max_chars = _int_option(config, "lyrics_max_chars", DEFAULT_MAX_CHARS, 0)
+    sentences = len(break_sentences(entries, threshold, punctuation, max_chars))
+    char_limit = f" +{max_chars}字上限" if max_chars > 0 else ""
     follow = "跟随" if config.get("lyrics_follow", True) else "固定"
-    return (f"{len(entries)} 条歌词 · 流式={stream} · "
+    return (f"{len(entries)} 条歌词 / {sentences} 句 · 断句阈值={threshold} tick"
+            f"{' +标点' if punctuation else ''}{char_limit} · "
+            f"提前={config.get('lyrics_start_lead_ticks', DEFAULT_START_LEAD)} tick · "
             f"颜色={config.get('lyrics_color', 'white')} · 字号={config.get('lyrics_scale')} · "
             f"保持距离={config.get('lyrics_lead_distance')} · "
             f"随机={_jitter_text(config)} · 位置={follow}")
 
 
-def import_lyrics_json(config: dict, tempo: float = None) -> None:
+def import_lyrics_json(config: dict) -> None:
     """导入歌词 JSON（导入即启用歌词功能）。"""
     print(Ansi.title("\n=== 导入歌词 JSON ==="))
     print(Ansi.dim("支持编辑器导出的 noteblock-web-lyrics（formatVersion 2），只读取 lane 0。"))
+    print(Ansi.dim("逐字模式要求一字一条记录（空格也算一个字）且 duration ≥ 1。"))
     current = imported_entries(config)
     if current:
         print(Ansi.info(f"当前已导入 {len(current)} 条歌词"))
@@ -613,14 +724,12 @@ def import_lyrics_json(config: dict, tempo: float = None) -> None:
     ]
     print(Ansi.success(f"已导入 {len(entries)} 条歌词（首条 tick {entries[0][0]}，"
                        f"末条 tick {entries[-1][0]}）"))
-    if config.get("lyrics_stream"):
-        threshold = stream_threshold_ticks(config, tempo)
-        segments = build_stream_segments(
-            entries, threshold,
-            _int_option(config, "lyrics_stream_max_len", DEFAULT_STREAM_MAX_LEN, 1))
-        print(Ansi.info(f"流式歌词：每 {config.get('lyrics_stream_seconds')} 秒（≈{threshold} tick）"
-                        f"内的文字会合并成 {len(segments)} 句"))
-    print(Ansi.dim("配色 / 字号 / 时长等可在 [3] 显示参数里调整。"))
+    threshold = _int_option(config, "lyrics_char_threshold", DEFAULT_THRESHOLD, 0)
+    segments = build_char_segments(entries, config)
+    longest = max((segment["count"] for segment in segments), default=0)
+    print(Ansi.info(f"逐字歌词：按 {threshold} tick 阈值断成 {len(segments)} 句"
+                    f"（最长一句 {longest} 字），每句一份 chars= 时间表"))
+    print(Ansi.dim("配色 / 动画 / 断句阈值等可在 [3] 显示参数里调整。"))
 
 
 def clear_lyrics(config: dict) -> None:
@@ -682,31 +791,34 @@ def _jitter_text(config: dict) -> str:
 
 
 def edit_lyrics_display_settings(config: dict) -> None:
-    """歌词显示参数：外观 / 时长 / 动画 / 位置 / 流式。"""
+    """歌词显示参数：外观 / 动画时长 / 动画 / 位置 / 断句。"""
     while True:
         style = config.get("layout_style", "flat")
         master = config.get("master_group")
-        print(Ansi.title("\n=== 歌词显示参数 ==="))
+        threshold = _int_option(config, "lyrics_char_threshold", DEFAULT_THRESHOLD, 0)
+        punctuation = "开" if config.get("lyrics_break_on_punctuation") else "关"
+        print(Ansi.title("\n=== 歌词显示参数（逐字模式）==="))
         print(f"  颜色 {config.get('lyrics_color')} · 字号 {config.get('lyrics_scale')} · "
-              f"时长 {config.get('lyrics_duration')} · 入场 {config.get('lyrics_enter')} · "
-              f"出场 {config.get('lyrics_exit')}")
+              f"入场 {config.get('lyrics_enter')} · 出场 {config.get('lyrics_exit')}")
         print(f"  入场动画 {config.get('lyrics_anim_in') or '无'} · "
               f"出场动画 {config.get('lyrics_anim_out') or '入场镜像'}")
+        max_chars = _int_option(config, "lyrics_max_chars", DEFAULT_MAX_CHARS, 0)
+        char_limit = f"{max_chars} 字" if max_chars > 0 else "不限"
+        print(f"  断句阈值 {threshold} tick · 标点断句 {punctuation} · 每句上限 {char_limit}")
+        print(f"  相对音乐提前 {config.get('lyrics_start_lead_ticks')} tick 显示")
         print(f"  保持距离 {config.get('lyrics_lead_distance')} · 高度 {config.get('lyrics_y_offset')} · "
               f"侧向偏移 {config.get('lyrics_side_offset') if config.get('lyrics_side_offset') is not None else '无'} · "
               f"随机 {_jitter_text(config)}")
         print(f"  {'跟随前进' if config.get('lyrics_follow', True) else '固定在结构中点'} · "
               f"链层 -{config.get('lyrics_chain_y_offset')}")
-        print(f"  流式合并 {'开启' if config.get('lyrics_stream') else '关闭'} · "
-              f"{config.get('lyrics_stream_seconds')} 秒 / 上限 {config.get('lyrics_stream_max_len')} 字")
         if style != "flat" and master is not None:
             print(Ansi.dim(f"  文字锚定在核心组（组{master + 1}）上方"))
         print("  [1] 外观（颜色 / 字号）")
-        print("  [2] 时长（显示时长 / 入场 / 出场）")
+        print("  [2] 时间（每个字的入场 enter / 出场 exit / 相对音乐提前量）")
         print("  [3] 入场动画（编号选择）")
         print("  [4] 出场动画（编号选择）")
         print("  [5] 位置（保持距离 / 高度 / 侧向 / 随机范围 / 跟随 / 链层）")
-        print("  [6] 流式合并（开关 / 秒数 / 单段字数上限）")
+        print("  [6] 断句（长音阈值 / 标点断句 / 每句字数上限）")
         print("  [0] 返回")
         choice = input(Ansi.prompt("选择: ")).strip()
         if choice == "1":
@@ -716,12 +828,16 @@ def edit_lyrics_display_settings(config: dict) -> None:
             config["lyrics_scale"] = _ask(
                 "字号 scale", config.get("lyrics_scale"), float, 0.05, 64.0)
         elif choice == "2":
-            config["lyrics_duration"] = _ask(
-                "显示时长 duration", config.get("lyrics_duration"), int, 1)
+            print(Ansi.dim("  逐字模式下这是**每个字**的动画时长，建议入场 0~2、出场 2~4。"))
             config["lyrics_enter"] = _ask(
                 "入场时长 enter", config.get("lyrics_enter"), int, 0)
             config["lyrics_exit"] = _ask(
                 "出场时长 exit", config.get("lyrics_exit"), int, 0)
+            print(Ansi.dim("  提前量：歌词比音乐**早**多少显示（单位歌曲 tick，1 tick = 2 游戏 tick）；"
+                           "0 = 同时。"))
+            config["lyrics_start_lead_ticks"] = _ask(
+                "相对音乐提前（歌曲 tick）",
+                config.get("lyrics_start_lead_ticks"), int, 0)
         elif choice == "3":
             _choose_animation(config, "lyrics_anim_in", "入场动画")
         elif choice == "4":
@@ -752,28 +868,36 @@ def edit_lyrics_display_settings(config: dict) -> None:
                 "命令方块距结构底部层数（越大越靠下）",
                 config.get("lyrics_chain_y_offset"), int, 1)
         elif choice == "6":
-            current = config.get("lyrics_stream")
+            print(Ansi.dim("  字 duration 严格大于阈值 → 该字是本句最后一个字（长音断句）；"
+                           "阈值越大句子越长。"))
+            config["lyrics_char_threshold"] = _ask(
+                "断句阈值（tick，与歌词 duration 同单位）",
+                config.get("lyrics_char_threshold"), int, 0)
+            print(Ansi.dim("  每句字数上限：写满这么多字也断句（与长音规则叠加），0 = 不限。"))
+            config["lyrics_max_chars"] = _ask(
+                "每句字数上限（0=不限）",
+                config.get("lyrics_max_chars"), int, 0)
+            current = config.get("lyrics_break_on_punctuation")
             ans = input(Ansi.prompt(
-                f"  是否合并连续歌词 (y/n，回车={'保持开启' if current else '保持关闭'}): ")).strip().lower()
+                f"  标点（，。！？等）也断句 (y/n，回车={'保持开启' if current else '保持关闭'}): ")).strip().lower()
             if ans in ("y", "yes"):
-                config["lyrics_stream"] = True
+                config["lyrics_break_on_punctuation"] = True
             elif ans in ("n", "no"):
-                config["lyrics_stream"] = False
-            if config.get("lyrics_stream"):
-                config["lyrics_stream_seconds"] = _ask(
-                    "合并时间阈值（秒）", config.get("lyrics_stream_seconds"), float, 0.01)
-                config["lyrics_stream_max_len"] = _ask(
-                    "单段字数上限", config.get("lyrics_stream_max_len"), int, 1)
+                config["lyrics_break_on_punctuation"] = False
+            entries = imported_entries(config)
+            if entries and not validate_entries(entries):
+                segments = build_char_segments(entries, config)
+                print(Ansi.info(f"  当前设置会断成 {len(segments)} 句"))
         elif choice in ("", "0", "q"):
             return
         else:
             print(Ansi.error("无效选项"))
 
 
-def edit_lyrics_menu(config: dict, tempo: float = None) -> None:
+def edit_lyrics_menu(config: dict) -> None:
     """歌词子菜单：导入 / 清空 / 显示参数。"""
     while True:
-        print(Ansi.title("\n=== 歌词字幕（/mpe text chain）==="))
+        print(Ansi.title("\n=== 歌词字幕（/mpe text chain 逐字）==="))
         print(f"  {_lyrics_status(config)}")
         print("  [1] 导入歌词 JSON")
         print("  [2] 清空歌词")
@@ -781,7 +905,7 @@ def edit_lyrics_menu(config: dict, tempo: float = None) -> None:
         print("  [0] 返回")
         choice = input(Ansi.prompt("选择: ")).strip()
         if choice == "1":
-            import_lyrics_json(config, tempo)
+            import_lyrics_json(config)
         elif choice == "2":
             clear_lyrics(config)
         elif choice == "3":

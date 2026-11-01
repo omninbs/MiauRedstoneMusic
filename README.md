@@ -37,7 +37,7 @@
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Usage](#usage)
-- [Lyric Command Blocks](#lyric-command-blocks)
+- [Lyric Subtitles (per-character)](#lyric-subtitles-mpe-text-chain-per-character)
 - [Project Structure](#project-structure)
 - [Brand Assets](#brand-assets)
 - [Notes and Limitations](#notes-and-limitations)
@@ -67,7 +67,7 @@ For source songs, the online NBS site [webnbs.com](https://webnbs.com) can be us
 | **Interface** | Interactive terminal menu |
 | **Target** | Minecraft Java Edition 1.21.11 |
 | **Optional** | Particle lyrics and bouncing-ball effects via MiauParticleEffects |
-| **Config** | In-memory only — nothing is read from or written to disk |
+| **Config** | Saved per song path under `configs/` in the install directory (one JSON per path); re-opening the same song restores it |
 
 ---
 
@@ -86,7 +86,7 @@ For source songs, the online NBS site [webnbs.com](https://webnbs.com) can be us
 | **Timing engine** | Repeater and support blocks represent timing gaps and signal paths. |
 | **Repeater modes** | Uniform: one repeater per blank tick, easiest to read. Compact: four blank ticks folded into one `delay=4` repeater, shorter structure (default). Both modes share the same timing; lyrics and particle effects follow the actual layout. |
 | **Modern instruments** | Maps NBS instruments to note-block under-blocks, including copper and waxed copper stages. |
-| **Lyric subtitles** | Optional single `/mpe text chain` command (one impulse command block) driving particle subtitles. |
+| **Lyric subtitles** | Optional single `/mpe text chain` command (one impulse command block) driving **per-character** particle subtitles: long-note sentence breaks plus a `chars=` schedule per sentence. |
 | **Particle effects** | Optional `/mpe noteblock chain` bouncing-ball command block per group. |
 
 ---
@@ -192,32 +192,44 @@ python -m miaunoteblock
 | 5 | Press Enter from the menu to generate the structure. |
 | 6 | Enter the output path, or accept `./redstone_music.schem`. |
 
+Configuration is **saved per song**: the song's absolute path maps to one fixed file
+(`configs/<song-name>_<path-hash>.json`) that is rewritten after every change, so opening the
+same path again restores the previous layout, lyric and particle settings. Different paths keep
+separate configurations.
+
 The generated file can be loaded with a compatible Minecraft structure workflow, such as a schematic-capable editor or server tool. The generator reports the normalized block bounds and suggests the resulting origin after loading; the exact paste workflow depends on your setup.
 
 ---
 
-## Lyric Subtitles (`/mpe text chain`)
+## Lyric Subtitles (`/mpe text chain`, per-character)
 
 Generate a synchronous lyric subtitle track that renders through particles. A whole song needs only **one impulse command block plus one command** — no repeater lyric chain inside the structure.
 
-1. Import a lyric JSON exported by the lyric editor (menu `[5] → [1]`); importing a lyric file is what enables the feature, and the same menu can clear it.
-2. Adjust color, scale, timing, animation, position and streaming merge in `[5] → [3]`: `[2]` timing, `[3]` enter animation, `[4]` exit animation (both chosen by number), `[5]` position (lead distance / height / side offset / random range / follow / command-block layer), `[6]` streaming merge.
+Lyrics are split on **long notes**: when a character's `duration` is **strictly greater** than the break threshold (default 4 ticks), that character ends the current sentence and the next character starts a new one. On top of that there is a **per-sentence character limit** (default 18; reaching it also breaks, `0` = unlimited). Each sentence becomes one segment carrying a `chars=` schedule of "appear at / stay for" per character, and the mod reveals them one at a time — a finished sentence is never erased by the next one, it simply fades out after its last character.
+
+Lyrics can also be shown **earlier** than the music: by default 4 song ticks (= 8 game ticks, ~0.4 s) ahead, which compensates for the lyrics feeling slightly late. Adjustable in `[2]`.
+
+1. Import a lyric JSON exported by the lyric editor (menu `[5] → [1]`); importing a lyric file is what enables the feature, and the same menu can clear it. **One record per character** (spaces count as characters) with `duration ≥ 1` is required; otherwise the import fails and lists the offending records.
+2. Adjust settings in `[5] → [3]`: `[1]` color/scale, `[2]` per-character enter/exit timing plus the lead, `[3]`/`[4]` enter/exit animation (chosen by number), `[5]` position (lead distance / height / side offset / random range / follow / command-block layer), `[6]` break threshold / punctuation breaking / per-sentence character limit.
 3. Generate the `.schem` file.
 
 Generated commands look like:
 
 ```text
-/mpe text chain ~~~ 178,5,0,2,20,起风了|180,5,0,22,20,第二_句 color=white scale=10 enter=5 exit=5 towards=0,0,0 fade=both force=true in=typewriter:left
+/mpe text chain ~~~ 78,7,-1,186,0,起来;chars=0:8,8:24|86,7,-1,218,0,不愿;chars=0:8,8:12 color=white scale=10 enter=0 exit=3 towards=-90,0,0 fade=both force=true in=scale:enlarge
 ```
 
 - The anchor is always `~~~` (the command block's own position); per-segment `x,y,z` are offsets from it, so copying or moving the structure needs no data changes.
-- `start` is an absolute tick offset from the moment the command block runs (20 ticks = 1 second). The command block's own 1-tick execution delay is already included, and the value is aligned with the music chain's timing origin.
+- `start` is an absolute tick offset from the moment the command block runs (20 ticks = 1 second). The command block's own 1-tick execution delay is already included, the value is aligned with the music chain's timing origin, and the lead is subtracted (never negative: the first sentence is clamped to tick 0 at worst).
+- The segment `duration` is always `0`: in per-character mode the mod derives the sentence lifetime from `chars=`.
+- `chars=char_start:char_duration,...` must have exactly one entry per **visible character** (`§x` / `&x` color codes do not count; a space, written `_`, does). `char_start` is relative to the segment `start` (first character is 0) and `char_duration` is how long the character stays before it starts exiting. One song tick equals two game ticks, so every value in the schedule is twice the song-tick value; the lead converts the same way.
+- **Breaking**: only `duration > threshold` breaks on duration (`==` does not); the long note stays in the current sentence and plays in full before the whole sentence exits. Larger thresholds give longer sentences (a huge value yields a single sentence for the song). The character limit (default 18, `0` = unlimited) **stacks** with the long-note rule, so a sentence may break earlier on duration. `[6]` can additionally break on punctuation (off by default).
+- **Forbidden animations** in per-character mode: `typewriter` / `wipe` / `spacing` / `scatter` (they conflict with the schedule and the mod rejects them). They are not offered in the menu and are stripped with a warning. Recommended: `enter=0 exit=3 fade=both in=scale:enlarge`.
 - **Lead distance**: the text X coordinate equals the currently powered position plus `lead distance` (default 16 blocks). The structure always extends along **+X**, so the text stays ahead of the action instead of sticking to the camera. The powered position is looked up from the **real chain layout**: with merged repeaters the chain is shorter and the text follows that compressed layout, so both repeater modes stay aligned.
-- **Random jitter**: optional ± range for X/Y/Z (`[5] → random range`, 0 = off), drawn per segment in 0.5-block steps.
+- **Random jitter**: optional ± range for X/Y/Z (`[5] → random range`, 0 = off), drawn per sentence in 0.5-block steps.
 - Spaces are written as `_`; `|`, `;`, and `,` inside the text are replaced with full-width characters so the command cannot be split incorrectly.
-- Commands longer than roughly 32000 characters are split into several impulse command blocks, each with a unique `id=`.
-- Enter/exit animations are picked by number from `typewriter` / `wipe` / `slide` / `scale` / `zoom` / `flip` / `rotate` / `scatter` / `bounce` / `drop` / `spacing` / `clarity`; leaving the exit animation empty makes the mod mirror the enter animation. With streaming merge enabled, consecutive text is merged into one line and the per-segment `enter=` spreads the typing over half of the span.
-- The structure always extends along +X, so `towards=` is fixed at `0,0,0` (facing the audience on the −X side).
+- Commands longer than roughly 32000 characters are split into several impulse command blocks (split on sentence boundaries, never inside a sentence), each with a unique `id=`.
+- The structure always extends along +X, so `towards=` is fixed at `-90,0,0` (the text faces away from the extension direction, towards the audience on the −X side).
 
 The bouncing-ball effect uses a separate `/mpe noteblock chain` command; pick the participating tracks in menu `[6]`, with detailed parameters in its advanced submenu.
 
@@ -233,6 +245,7 @@ MiauParticleEffects provides the `/mpe` entry point and renders text as particle
 | `pm.bat` | Windows launcher for the entry point. |
 | `miaunoteblock/` | Python package holding the generator logic. `app.py` contains the interactive flow and `main()`; `constants.py`, `config.py`, `console.py`, `lyrics.py`, `particles.py`, `instruments.py`, `layout.py`, and `generation.py` hold the reusable modules. |
 | `mpe_docs.md` | MiauParticleEffects command and environment notes. |
+| `configs/` | Per-song configuration files written at runtime (one per song path, git-ignored). |
 | `Readme_CN.md` | Chinese documentation. |
 | `LICENSE` | Apache License 2.0. |
 
@@ -266,7 +279,7 @@ A flat, single-object mark with a limited palette works best: it stays legible a
 > **Limitations**
 > - Large songs, dense chords, small particle density, or many simultaneous effects may require substantial Minecraft performance headroom.
 > - The tool currently generates `.schem` structures only; it does not export a standalone command text file or another structure format.
-> - The tool is interactive and keeps configuration in memory only: settings reset to defaults when the process exits, and no configuration file is read or written.
+> - Configuration is saved automatically per **song file path** under `configs/` in the install directory (one JSON per path); delete that JSON to reset a song back to defaults.
 > - The repository does not currently provide official release binaries, screenshots, or a verified download URL.
 
 ---

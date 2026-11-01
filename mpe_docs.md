@@ -145,12 +145,31 @@ x,y,z,start,duration,文字[;段内选项]|x,y,z,start,duration,文字[;段内�
 |---|---|
 | `x,y,z` | 相对锚点的方块偏移，可为小数或负数；文字中心 = 锚点 + 偏移 |
 | `start` | 从命令方块执行那一刻算起的 tick（20 tick = 1 秒），绝对时刻而非间隔 |
-| `duration` | 这段文字显示多少 tick（不含入场/出场动画），可省略 |
+| `duration` | 这段文字显示多少 tick（不含入场/出场动画）；逐字模式写 `0` 或省略，由模组按 `chars=` 推导 |
 | `文字` | 支持 `§4` / `&4` 颜色码；空格写成 `_`；不能含 `|` `;` `,` |
 | `段内选项` | 覆盖全局选项，用 `;` 分隔 |
 
 段与段用 `|` 分隔，顺序随意，可以重叠。选项与 `/mpe text` 相同（`color=` `scale=`
-`enter=` `exit=` `towards=` `gradient=` `fade=` `density=` `linger=` `id=` 等）。
+`enter=` `exit=` `towards=` `gradient=` `fade=` `density=` `linger=` 等）。
+
+### 逐字时间表 `chars=`
+
+```
+/mpe text chain ~~~ 0,2,0,99,0,今天_真好;chars=0:3,3:3,6:2,8:3,11:12
+```
+
+| 项 | 含义 |
+|---|---|
+| 条目数 | **必须等于句子的可见字符数**：`§x` / `&x` 颜色码不算，**空格（`_`）算一个** |
+| `字start` | 这个字相对**本段 `start`** 的 tick 偏移（≥ 0） |
+| `字duration` | 这个字从出现到**开始退场**的时长（≥ 1） |
+
+- 多个字可以写相同的 `字start`（同一 tick 一起出现）。
+- `chars=` 写在段内（`;chars=...`）或全局（空格分隔）都行。
+- 段 `duration` 只用于校验：写 `0` / 省略 = 自动推导；写成比时间表更小的值会报错。
+- 逐字模式与 `typewriter` / `wipe` / `spacing` / `scatter` 冲突，用了会直接报错；
+  推荐 `enter=0 exit=3 fade=both in=scale:enlarge`。
+- 一句歌词 = 一个独立显示实例：上一句不会被下一句清掉，也不需要 `/mpe clear`。
 
 `id=` 默认取锚点坐标；同一 ID 再次执行等于重置重播，所以把超长命令拆成多条链时，
 每条必须给不同的 `id=`。
@@ -163,7 +182,10 @@ x,y,z,start,duration,文字[;段内选项]|x,y,z,start,duration,文字[;段内�
 /mpe text chain clear id=<ID>
 ```
 
-MiauRedstoneMusic 会为每条歌词自动生成这种命令，并补上命令方块自身的 1 tick 执行延迟。
+MiauRedstoneMusic 会按「长音断句」自动生成这种命令：一句一个段、每段带 `chars=` 时间表，
+并额外限制每句字数（默认 18 字）；段 `start` 会补上命令方块自身的 1 tick 执行延迟，
+再减去可配置的提前量（默认 4 个歌曲 tick），让歌词早于音乐显示。
+歌词数据里的 1 个歌曲 tick 换算成 2 游戏 tick。
 
 ## 五、颜色系统
 

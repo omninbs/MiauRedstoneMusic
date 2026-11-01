@@ -14,6 +14,9 @@ env/
 # Generated structures
 *.schem
 
+# Per-song configuration (created at runtime, keyed by song path)
+configs/
+
 # Editors and OS
 .vscode/
 .idea/
