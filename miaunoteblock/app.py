@@ -604,7 +604,8 @@ def generate(config: dict, song, virtual_layers: List[dict], layer_to_group: Dic
     if not generate_schematic_from_commands(commands, schem_path):
         return
     if config.get("layout_style") == "curve" and meta:
-        _verify_curve(schem_path, meta, max_tick)
+        saved_path = schem_path if schem_path.lower().endswith(".schem") else schem_path + ".schem"
+        _verify_curve(saved_path, meta, max_tick)
 
 
 def _verify_curve(schem_path: str, meta: dict, max_tick: int) -> None:
