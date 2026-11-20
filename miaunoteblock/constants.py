@@ -2,7 +2,7 @@
 
 from typing import Dict
 
-VERSION = "4.0"
+VERSION = "5.0"
 
 class Ansi:
     RESET = "\033[0m"

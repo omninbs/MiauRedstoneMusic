@@ -59,6 +59,8 @@ from .instruments import (
 from .layout import calc_nest_layers, compute_min_radius, compute_offsets
 from .lyrics import build_lyrics_chain, edit_lyrics_menu
 from .particles import build_particle_commands, edit_particle_settings
+from .curve import build_curve_commands
+from .simulate import Simulator, compare, format_report, load_schem
 
 LAYOUT_STYLES = {
     "1": ("flat", "平铺"),
@@ -68,6 +70,7 @@ LAYOUT_STYLES = {
     "5": ("semisquare", "半方形"),
     "6": ("nest_circle", "嵌套圆"),
     "7": ("nest_square", "嵌套方"),
+    "8": ("curve", "曲线音量 + 矿车跟随"),
 }
 STYLE_LABELS = {key: label for key, label in LAYOUT_STYLES.values()}
 
@@ -214,7 +217,7 @@ def edit_layout(num_groups: int, config: dict, layer_to_group: Dict[int, int],
         mark = "*" if style == current_style else " "
         print(f"  {mark}[{key}] {label}")
     choice = input(Ansi.prompt(
-        f"样式 (1-7，回车保持 {STYLE_LABELS.get(current_style, current_style)}): ")).strip()
+        f"样式 (1-8，回车保持 {STYLE_LABELS.get(current_style, current_style)}): ")).strip()
     if not choice:
         style = current_style
     elif choice in LAYOUT_STYLES:
@@ -229,6 +232,24 @@ def edit_layout(num_groups: int, config: dict, layer_to_group: Dict[int, int],
             "平铺间距", config.get("flat_spacing", 3), int, 1)
         config["master_group"] = None
         print(Ansi.success("排版已更新"))
+        return
+
+    if style == "curve":
+        print(Ansi.dim("音量 = 1 − 音符盒到中心轴的横向距离 / 48；左右两侧关于中心轴对称。"))
+        config["curve_lane_spacing"] = ask_number(
+            "车道垂直间距", config.get("curve_lane_spacing", 3), int, 2)
+        repeaters = ask_number(
+            "每条分支固定中继器数 (-1=自动)", config.get("curve_branch_repeaters", -1),
+            int, -1, 3)
+        config["curve_branch_repeaters"] = repeaters
+        cart = input(Ansi.prompt(
+            f"生成隐形矿车跟随玩家？(Y/n，当前是"
+            f"{'否' if not config.get('curve_minecart', True) else '是'}): ")).strip().lower()
+        if cart in ("y", "yes", "是"):
+            config["curve_minecart"] = True
+        elif cart in ("n", "no", "否"):
+            config["curve_minecart"] = False
+        print(Ansi.success("曲线音量排版已更新"))
         return
 
     groups = sorted(set(layer_to_group.values()))
@@ -396,6 +417,11 @@ def print_summary(config: dict, virtual_layers: List[dict], layer_to_group: Dict
     style_text = STYLE_LABELS.get(style, style)
     if style == "flat":
         style_text += f" 间距={config.get('flat_spacing', 3)}"
+    elif style == "curve":
+        repeaters = config.get("curve_branch_repeaters", -1)
+        style_text += (f" 车道间距={config.get('curve_lane_spacing', 3)}"
+                       f" 分支中继器={'自动' if repeaters is None or repeaters < 0 else repeaters}"
+                       f" 矿车={'开' if config.get('curve_minecart', True) else '关'}")
     elif style in ("nest_circle", "nest_square"):
         style_text += (f" 半径={config.get('layout_radius')} 层数={config.get('nest_layers')}"
                        f" 间距={config.get('layer_gap')}")
@@ -499,15 +525,30 @@ def _launch_chain(targets: List[Tuple[object, Tuple[int, int, int]]],
 
 
 def build_commands(config: dict, song, virtual_layers: List[dict],
-                   layer_to_group: Dict[int, int], max_tick: int) -> List[str]:
+                   layer_to_group: Dict[int, int], max_tick: int,
+                   meta_out: dict = None) -> List[str]:
     """生成完整的方块命令列表：音乐链 + 启动链 + 歌词 + 粒子。"""
     groups = sorted(set(layer_to_group.values()))
+    direction = STRUCTURE_DIRECTION
+
+    if config.get("layout_style") == "curve":
+        commands, activations, meta = build_curve_commands(
+            virtual_layers, layer_to_group, (0, 0, 0), max_tick, config,
+            direction=direction, song=song)
+        if meta_out is not None:
+            meta_out.update(meta)
+        if config.get("lyrics_import") or (config.get("particles_enabled")
+                                           and config.get("particles_layers")):
+            print(Ansi.prompt("提示：曲线音量排版暂不支持歌词 / 粒子轨道，本次已跳过。"))
+        targets = sorted(activations.items(), key=lambda item: item[1])
+        launch = _launch_chain(targets, (0, 0, 0), direction)
+        return commands[:1] + launch + commands[1:]
+
     offsets = compute_offsets(groups, config, len(groups))
     group_offset_dict = {gid: offsets[index] for index, gid in enumerate(groups)}
 
     print(Ansi.info("正在预计算方块位置..."))
     note_events: List[Tuple[int, int, int, int, int, int]] = []
-    direction = STRUCTURE_DIRECTION
     commands, activation_positions = build_all_commands_virtual(
         virtual_layers, layer_to_group, [group_offset_dict[gid] for gid in groups],
         (0, 0, 0), direction, max_tick,
@@ -553,12 +594,42 @@ def generate(config: dict, song, virtual_layers: List[dict], layer_to_group: Dic
     else:
         max_tick = max_in_file
 
-    commands = build_commands(config, song, virtual_layers, layer_to_group, max_tick)
+    meta: dict = {}
+    commands = build_commands(config, song, virtual_layers, layer_to_group, max_tick,
+                              meta_out=meta)
 
     schem_path = input(Ansi.prompt("保存路径 (默认 ./redstone_music.schem): ")).strip()
     if not schem_path:
         schem_path = "./redstone_music.schem"
-    generate_schematic_from_commands(commands, schem_path)
+    if not generate_schematic_from_commands(commands, schem_path):
+        return
+    if config.get("layout_style") == "curve" and meta:
+        _verify_curve(schem_path, meta, max_tick)
+
+
+def _verify_curve(schem_path: str, meta: dict, max_tick: int) -> None:
+    """加载刚保存的结构，模拟红石并输出统计（Fnbs == Fmc 验收）。"""
+    plan = meta["plan"]
+    player = meta["player"]
+    total_blocks = len(meta.get("activations", {})) + meta.get("block_count", 0)
+    estimate = total_blocks * (2 * max_tick + 8)
+    if estimate > 12_000_000:
+        print(Ansi.prompt("提示：歌曲较长，已跳过结构自检（可用 tests/test_curve_volume.py 单独验证）"))
+        return
+    print(Ansi.info("正在加载结构并模拟红石（自检）..."))
+    try:
+        world = load_schem(schem_path)
+    except Exception as exc:  # noqa: BLE001 - 读档失败不该打断生成
+        print(Ansi.error(f"结构回读失败，跳过自检：{exc}"))
+        return
+    simulator = Simulator(world)
+    initial = (player["x0"] + 0.5, player["y"], player["z"])
+    simulation = simulator.run(list(meta["activations"].values()),
+                               max_ticks=2 * (max_tick + 2) + 2 * plan["branch_repeaters"] + 8,
+                               initial_player=initial)
+    result = compare(plan, simulation, sound_range=plan["sound_range"])
+    print(Ansi.title("──────── 结构自检 ────────"))
+    print(format_report(result))
 
 
 # ── 主流程 ───────────────────────────────────────────────────

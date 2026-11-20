@@ -80,7 +80,7 @@ For source songs, the online NBS site [webnbs.com](https://webnbs.com) can be us
 | **Smart grouping** | Automatic grouping by instrument category, or maximum merging. |
 | **Instrument handling** | Detects instruments and reorders tracks, with percussion placed later. |
 | **Stereo support** | Mono tracks plus selected stereo tracks, duplicated and distributed symmetrically. |
-| **Rich layouts** | Flat, circle, square, semicircle, semisquare, nested-circle, and nested-square. |
+| **Rich layouts** | Flat, circle, square, semicircle, semisquare, nested-circle, nested-square, plus curve volume with a minecart follower. |
 | **Master group** | Choose a core group for non-flat layouts. |
 | **Staircase modes** | Per-group default or descending staircase generation. |
 | **Timing engine** | Repeater and support blocks represent timing gaps and signal paths. |
@@ -104,6 +104,24 @@ MiauRedstoneMusic can arrange each group with a different footprint, so the reds
 | **Semisquare** | Half-square arrangement. |
 | **Nested circle** | Concentric rings that reuse space efficiently. |
 | **Nested square** | Concentric squares for compact builds. |
+| **Curve volume + minecart** | Encodes each note's volume as its distance from the center axis, keeps the stereo image symmetric, and adds an invisible minecart that follows playback. |
+
+### Curve volume layout
+
+Note blocks always play at a fixed volume with a 48-block linear falloff, so the curve layout
+turns volume into geometry:
+
+```
+volume ≈ (1 − lateral distance from the center axis / 48)
+```
+
+- Every group becomes a **lane** (stacked along Y). Each side of a lane has its own repeater backbone that advances 2 blocks per song tick.
+- A tap block on the backbone (wool strongly powered by a repeater) sends a **branch** along ±Z; the note block at the end of the branch is the sound source.
+- Each branch carries a **fixed number of repeaters** (0–3, chosen automatically). They refresh the 15-block signal limit and delay the whole side by exactly `2n` game ticks — constant for the entire song, so events never drift.
+- Stereo copies are strictly mirrored; centered notes alternate sides so two very different volumes do not share one branch.
+- Each note block sits next to the player's corridor at `z = 0.5`, which stays empty. A command-block chain summons an invisible minecart, mounts the nearest player and teleports it once per tick so you always stay on the center axis.
+- After saving, the tool re-loads the `.schem`, simulates redstone tick by tick and prints `Fnbs(t) == Fmc(t)` stats. You can also run `python tests/test_curve_volume.py`.
+- Lyrics and particle chains are skipped in this layout because they rely on the linear coordinates.
 
 ---
 
@@ -243,7 +261,7 @@ MiauParticleEffects provides the `/mpe` entry point and renders text as particle
 | :-- | :-- |
 | `miau_redstone_music.py` | Interactive entry point. |
 | `pm.bat` | Windows launcher for the entry point. |
-| `miaunoteblock/` | Python package holding the generator logic. `app.py` contains the interactive flow and `main()`; `constants.py`, `config.py`, `console.py`, `lyrics.py`, `particles.py`, `instruments.py`, `layout.py`, and `generation.py` hold the reusable modules. |
+| `miaunoteblock/` | Python package holding the generator logic. `app.py` contains the interactive flow and `main()`; `constants.py`, `config.py`, `console.py`, `lyrics.py`, `particles.py`, `instruments.py`, `layout.py`, `generation.py`, `volume.py`, `curve.py`, and `simulate.py` hold the reusable modules (the last three implement the curve volume layout, its minecart follower, and the redstone simulator used for verification). |
 | `mpe_docs.md` | MiauParticleEffects command and environment notes. |
 | `configs/` | Per-song configuration files written at runtime (one per song path, git-ignored). |
 | `Readme_CN.md` | Chinese documentation. |
