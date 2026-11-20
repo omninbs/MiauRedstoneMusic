@@ -119,7 +119,7 @@ volume ≈ (1 − lateral distance from the center axis / 48)
 - A tap block on the backbone (wool strongly powered by a repeater) sends a **branch** along ±Z; the note block at the end of the branch is the sound source.
 - Each branch carries a **fixed number of repeaters** (0–3, chosen automatically). They refresh the 15-block signal limit and delay the whole side by exactly `2n` game ticks — constant for the entire song, so events never drift.
 - Stereo copies are strictly mirrored; centered notes alternate sides so two very different volumes do not share one branch.
-- Each note block sits next to the player's corridor at `z = 0.5`, which stays empty. A command-block chain summons an invisible minecart, mounts the nearest player and teleports it once per tick so you always stay on the center axis.
+- Each note block sits next to the player's corridor at `z = 0.5`, which stays empty. A command-block chain summons an invisible minecart, mounts the nearest player and teleports it once per tick so you always stay on the center axis. The uniform repeater mode (menu `[7]`) gives the smoothest cart motion; the compact mode saves blocks but jumps further during rests.
 - After saving, the tool re-loads the `.schem`, simulates redstone tick by tick and prints `Fnbs(t) == Fmc(t)` stats. You can also run `python tests/test_curve_volume.py`.
 - Lyrics and particle chains are skipped in this layout because they rely on the linear coordinates.
 
