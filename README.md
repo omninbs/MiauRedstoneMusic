@@ -206,7 +206,7 @@ python -m miaunoteblock
 | 1 | Enter the path to an `.nbs` file (default prompt: `song.nbs`). |
 | 2 | Choose whether to vertically compress and reorder tracks by instrument. |
 | 3 | Review the detected song metadata and virtual layers. |
-| 4 | Configure grouping, layout, stereo tracks, repeater timing, staircase modes, lyric subtitles, and particle effects (menus `[1]`–`[7]`). |
+| 4 | Configure grouping, layout, stereo tracks, repeater timing, staircase modes, lyric subtitles, and particle effects (menus `[1]`–`[7]`). For the new layout press **`[c]`** in the menu (or `[2]` → `8`). |
 | 5 | Press Enter from the menu to generate the structure. |
 | 6 | Enter the output path, or accept `./redstone_music.schem`. |
 

@@ -293,11 +293,12 @@ def build_curve_commands(virtual_layers: List[dict], layer_to_group: Dict[int, i
 
     def place_branch(x: int, y: int, side: int, entries: List[dict]) -> None:
         distance = entries[0]["distance"]
-        z_cell = side
         for offset, kind in _branch_parts(distance, repeated):
             z = side * offset
             if kind == "dust":
                 writer.set((x, y, z), DUST)
+                # 红石线必须放在实体方块上，否则进游戏会直接掉成物品
+                writer.set((x, y - 1, z), WOOL)
             elif kind == "repeater":
                 writer.set((x, y, z),
                            f"minecraft:repeater[facing={BRANCH_FACING[side]},delay=1]")
@@ -354,9 +355,13 @@ def build_curve_commands(virtual_layers: List[dict], layer_to_group: Dict[int, i
         summon = (f"summon minecart ~1.5 ~-1 ~{base_z + 0.5 - cart_z:.1f} "
                   f"{{Invisible:1b,Silent:1b,NoGravity:1b,Tags:[\"{MINECART_TAG}\"]}}")
         ride = f"ride @p mount @e[type=minecart,tag={MINECART_TAG},limit=1]"
+        # 召唤命令方块直接贴着启动红石块；骑乘命令方块晚 2 游戏 tick 触发，
+        # 避免「骑乘命令先执行、矿车还不存在」的竞态。
         writer.set((base_x - 1, player_y + 1, cart_z),
                    f"minecraft:command_block[facing=up]{{Command:{json.dumps(summon)}}}")
-        writer.set((base_x - 1, player_y - 1, cart_z),
+        writer.set((base_x - 1, player_y, cart_z + 1),
+                   "minecraft:repeater[facing=north,delay=1]")
+        writer.set((base_x - 1, player_y, cart_z + 2),
                    f"minecraft:command_block[facing=up]{{Command:{json.dumps(ride)}}}")
         activations["minecart"] = (base_x - 1, player_y, cart_z)
         meta["minecart"] = {"z": cart_z, "start_x": start_x,

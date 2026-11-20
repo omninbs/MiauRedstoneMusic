@@ -209,6 +209,26 @@ def edit_groups_interactive_virtual(virtual_layers: List[dict], song) -> Dict[in
 
 # ── 排版 ─────────────────────────────────────────────────────
 
+def edit_curve_layout(config: dict) -> None:
+    """曲线音量排版设置（主菜单 [c] 与排版菜单 [8] 共用）。"""
+    print(Ansi.title("\n=== 曲线音量排版（新）==="))
+    print(Ansi.dim("音量 ≈ 1 − 音符盒到中心轴的横向距离 / 48；左右声道关于延伸轴对称。"))
+    config["layout_style"] = "curve"
+    config["curve_lane_spacing"] = ask_number(
+        "车道垂直间距", config.get("curve_lane_spacing", 3), int, 2)
+    config["curve_branch_repeaters"] = ask_number(
+        "每条分支固定中继器数 (-1=自动)", config.get("curve_branch_repeaters", -1),
+        int, -1, 3)
+    cart = input(Ansi.prompt(
+        f"生成隐形矿车跟随玩家？(Y/n，当前是"
+        f"{'否' if not config.get('curve_minecart', True) else '是'}): ")).strip().lower()
+    if cart in ("y", "yes", "是"):
+        config["curve_minecart"] = True
+    elif cart in ("n", "no", "否"):
+        config["curve_minecart"] = False
+    print(Ansi.success("已切换到曲线音量排版：生成时会带隐形矿车跟随，并在保存后自动自检"))
+
+
 def edit_layout(num_groups: int, config: dict, layer_to_group: Dict[int, int],
                 virtual_layers: List[dict], song) -> None:
     print(Ansi.title("\n=== 排版设置 ==="))
@@ -235,21 +255,7 @@ def edit_layout(num_groups: int, config: dict, layer_to_group: Dict[int, int],
         return
 
     if style == "curve":
-        print(Ansi.dim("音量 = 1 − 音符盒到中心轴的横向距离 / 48；左右两侧关于中心轴对称。"))
-        config["curve_lane_spacing"] = ask_number(
-            "车道垂直间距", config.get("curve_lane_spacing", 3), int, 2)
-        repeaters = ask_number(
-            "每条分支固定中继器数 (-1=自动)", config.get("curve_branch_repeaters", -1),
-            int, -1, 3)
-        config["curve_branch_repeaters"] = repeaters
-        cart = input(Ansi.prompt(
-            f"生成隐形矿车跟随玩家？(Y/n，当前是"
-            f"{'否' if not config.get('curve_minecart', True) else '是'}): ")).strip().lower()
-        if cart in ("y", "yes", "是"):
-            config["curve_minecart"] = True
-        elif cart in ("n", "no", "否"):
-            config["curve_minecart"] = False
-        print(Ansi.success("曲线音量排版已更新"))
+        edit_curve_layout(config)
         return
 
     groups = sorted(set(layer_to_group.values()))
@@ -472,12 +478,14 @@ def print_summary(config: dict, virtual_layers: List[dict], layer_to_group: Dict
 def print_menu(config: dict) -> None:
     print(Ansi.title("──────── 菜单 ────────"))
     print("  [1] 音轨分组")
-    print("  [2] 排版")
+    style = config.get("layout_style", "flat")
+    print(f"  [2] 排版（当前：{STYLE_LABELS.get(style, style)}）")
     print("  [3] 立体声")
     print("  [4] 分组生成模式（默认 / 阶梯）")
     print("  [5] 歌词字幕")
     print("  [6] 粒子特效")
     print(f"  [7] 中继器模式：{'合并' if not config.get('uniform_repeater_mode') else '均匀'}（切换）")
+    print("  [c] 曲线音量排版（新：距离控音量 + 隐形矿车跟随）")
     print("  [8] 退出")
     print(Ansi.dim("  回车 = 按当前配置生成结构"))
 
@@ -492,15 +500,32 @@ def _launch_chain(targets: List[Tuple[object, Tuple[int, int, int]]],
                   start: Tuple[int, int, int], direction: str) -> List[str]:
     """生成启动链：两列朝上的命令方块，分别放置与清除每个启动红石块。
 
-    targets 为 [(gid|None, 红石块坐标), ...]，顺序即启动顺序：
-    第 i 项在第 i 环（t0+i+1）放置红石块，第 0 环是脉冲命令方块。
+    targets 为 [(gid|None, 红石块坐标), ...]，顺序即启动顺序。
+
+    结构自带一个启动红石块，粘贴后立刻给「放置列」供电，音乐/矿车自动开始；
+    启动红石块经过一个 ``delay=4`` 中继器把「清除列」推迟 8 游戏 tick，
+    这样红石块会先存在一段时间（给主链一个上升沿），随后被清掉，
+    之后只要拆掉再放回启动红石块即可重播。
     """
     dx, _, dz = DIR_OFFSET[direction]
     start_x, start_y, start_z = start
     place_x, place_z = start_x - 5 * dx, start_z - 5 * dz
     clear_x, clear_z = start_x - 7 * dx, start_z - 7 * dz
+    if not targets:
+        return []
 
     chain = []
+    # 启动红石块：紧贴放置列第一个脉冲命令方块（y-1），结构粘贴即触发
+    chain.append(f"setblock {place_x} {start_y - 1} {place_z} minecraft:redstone_block")
+    # 中继器把信号延迟 4 红石刻（8 游戏 tick）后送到清除列下方的红石线
+    relay_x, relay_z = place_x - dx, place_z - dz
+    chain.append(f"setblock {relay_x} {start_y - 1} {relay_z} "
+                 f"minecraft:repeater[facing={direction},delay=4]")
+    wire_x, wire_z = place_x - 2 * dx, place_z - 2 * dz
+    chain.append(f"setblock {wire_x} {start_y - 1} {wire_z} minecraft:redstone_wire")
+    # 红石线必须放在实体方块上，否则进游戏会直接掉落
+    chain.append(f"setblock {wire_x} {start_y - 2} {wire_z} minecraft:white_wool")
+
     for index, (_, (ax, ay, az)) in enumerate(targets):
         cy = start_y + index
         place_cmd = (f"setblock {_rel(ax - place_x)} {_rel(ay - cy)} {_rel(az - place_z)} "
@@ -597,6 +622,11 @@ def generate(config: dict, song, virtual_layers: List[dict], layer_to_group: Dic
     meta: dict = {}
     commands = build_commands(config, song, virtual_layers, layer_to_group, max_tick,
                               meta_out=meta)
+    style = config.get("layout_style", "flat")
+    if style == "curve":
+        print(Ansi.success(f"已按「曲线音量排版」生成：{meta.get('block_count', 0)} 个方块，"
+                           f"车道 {len(meta.get('plan', {}).get('groups', []))} 条，"
+                           f"矿车跟随 {'开' if meta.get('minecart') else '关'}"))
 
     schem_path = input(Ansi.prompt("保存路径 (默认 ./redstone_music.schem): ")).strip()
     if not schem_path:
@@ -651,6 +681,7 @@ def _interactive() -> None:
     clear_screen()
     print(Ansi.title("══════ MiauRedstoneMusic · NBS → 红石音乐结构 ══════"))
     print(Ansi.dim(f"作者: COM1919 | 版本: {VERSION}"))
+    print(Ansi.success("新功能：曲线音量排版 + 隐形矿车跟随 —— 进菜单后按 [c] 体验"))
 
     raw_path = input(Ansi.prompt("NBS 文件路径 (默认 song.nbs): ")).strip().strip('"').strip("'")
     song_path = raw_path or "song.nbs"
@@ -711,6 +742,8 @@ def _interactive() -> None:
         elif choice == "2":
             edit_layout(len(set(layer_to_group.values())), config,
                         layer_to_group, virtual_layers, song)
+        elif choice.lower() in ("c", "curve"):
+            edit_curve_layout(config)
         elif choice == "3":
             edit_stereo_layers(song, config)
             virtual_layers = build_virtual_layers(song, config.get('stereo_layers', []))
