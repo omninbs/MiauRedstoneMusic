@@ -309,20 +309,26 @@ def build_curve_commands(virtual_layers: List[dict], layer_to_group: Dict[int, i
         else:
             label = f"v{key[1]}{'R' if key[2] > 0 else 'L'}"
         previous_z = nodes[0]["z"]
-        # 起手中继器：输出到第一个音符盒
+        # 起手中继器：直接强充能第一个音符盒
         writer.set((base_x, y, previous_z), _repeater())
         writer.set((base_x, y - 1, previous_z), WOOL)
         activations[label] = (base_x - 1, y, previous_z)
 
-        for node in nodes:
+        for index, node in enumerate(nodes):
             x = node["x"]
             z = node["z"]
-            # 这一列：旧 Z → 新 Z 的红石线 + 音符盒（空 tick 用橡木木板）
-            if z != previous_z:
-                step = 1 if z > previous_z else -1
-                for wire_z in range(previous_z, z, step):
-                    writer.set((x + 1, y, wire_z), DUST)
-                    writer.set((x + 1, y - 1, wire_z), WOOL)
+            # 本 tick 的中继器与音符盒同 Z：中继器输出端正对音符盒 → 强充能
+            if index > 0:
+                writer.set((x, y, z), _repeater())
+                writer.set((x, y - 1, z), WOOL)
+                # 横向移动：红石线只负责把「上一个被强充能的音符盒/空音符」
+                # 的信号送进本中继器的背面（正对中继器输入端），
+                # 不依赖红石粉侧向充能任何方块。
+                if z != previous_z:
+                    step = 1 if z > previous_z else -1
+                    for wire_z in range(previous_z + step, z + step, step):
+                        writer.set((x - 1, y, wire_z), DUST)
+                        writer.set((x - 1, y - 1, wire_z), WOOL)
             entries = node["entries"]
             if entries:
                 note = entries[0]["note"]
@@ -333,8 +339,6 @@ def build_curve_commands(virtual_layers: List[dict], layer_to_group: Dict[int, i
             else:
                 writer.set((x + 1, y, z), EMPTY)
                 writer.set((x + 1, y - 1, z), WOOL)
-            writer.set((x + STEP, y, z), _repeater())
-            writer.set((x + STEP, y - 1, z), WOOL)
             previous_z = z
 
     meta = {

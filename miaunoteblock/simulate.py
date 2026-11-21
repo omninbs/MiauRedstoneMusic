@@ -395,16 +395,9 @@ class Simulator:
                             queue.append(neighbor)
             dirty.clear()
 
-            # 有电的红石线会强充能相邻的导体方块（参考结构靠这一点续链：
-            # 红石线末端紧贴的音符盒/空音符方块被强充能，给下一个中继器输入）
-            for cell, value in level.items():
-                if value <= 0:
-                    continue
-                for delta in ((1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1)):
-                    neighbor = (cell[0] + delta[0], cell[1] + delta[1],
-                                cell[2] + delta[2])
-                    if neighbor in self.conductors:
-                        powered.add(neighbor)
+            # 注意：红石粉只能弱充能「端点正对」的方块，不能侧向充能。
+            # 生成器因此不依赖红石粉给任何方块充能：横向移动时红石粉只把
+            # 上一个被中继器强充能的音符盒信号送进下一个中继器的背面。
 
             # 音符盒激活（含音符盒之间的导电传播）
             seeds = set()

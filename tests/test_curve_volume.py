@@ -166,10 +166,9 @@ def test_path_geometry():
             delta = abs(nodes[index]["z"] - nodes[index - 1]["z"])
             chk.ok(delta <= MAX_LATERAL_STEP,
                    f"{key} tick {nodes[index]['tick']}: 横向位移 {delta} > {MAX_LATERAL_STEP}")
-        # 严格 ABAB：R 在中继器位上，B 在 +1 位上是音符盒或空音符实心方块
+        # 严格 ABAB：中继器与音符盒同 Z，红石粉只接中继器背面
         for index, node in enumerate(nodes):
-            relay_z = nodes[index - 1]["z"] if index else node["z"]
-            relay = world.get((node["x"], node["y"], relay_z))
+            relay = world.get((node["x"], node["y"], node["z"]))
             chk.ok(relay is not None and relay["id"] == "repeater",
                    f"{key} tick {node['tick']}: X={node['x']} 不是中继器")
             body = world.get((node["x"] + 1, node["y"], node["z"]))
