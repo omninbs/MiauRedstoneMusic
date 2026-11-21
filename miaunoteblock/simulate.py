@@ -101,6 +101,25 @@ def world_from_commands(commands: List[str]) -> Dict[Coord, dict]:
     return world
 
 
+FLOATING_IDS = {"redstone_wire"}
+
+
+def check_structure(world: Dict[Coord, dict]) -> List[str]:
+    """检查进游戏会出问题的方块（目前主要查悬空红石线）。
+
+    红石线必须放在实体方块上，否则粘贴后会直接掉成物品；
+    中继器/音符盒/命令方块允许悬空，但生成器仍会给它们垫底。
+    """
+    issues: List[str] = []
+    for position, block in world.items():
+        if block["id"] not in FLOATING_IDS:
+            continue
+        below = world.get((position[0], position[1] - 1, position[2]))
+        if below is None or below["id"] in ("air", "cave_air", "void_air"):
+            issues.append(f"悬空红石线 @ {position}")
+    return issues
+
+
 def _varints(data: bytes):
     index = 0
     total = len(data)
@@ -506,7 +525,7 @@ def compare(plan: dict, simulation: dict, sound_range: float = 48.0,
             "pitch": note_to_pitch(entry["note"].key if hasattr(entry["note"], "key")
                                    else entry["note"].pitch),
             "instrument": entry["note"].instrument,
-            "side": entry["side"],
+            "side": entry.get("side", 0),
             "volume_plan": entry.get("volume_plan"),
             "volume_nbs": entry.get("volume_nbs"),
         })
@@ -518,7 +537,6 @@ def compare(plan: dict, simulation: dict, sound_range: float = 48.0,
     missing = []
     extra = []
     volume_errors = []
-    nbs_errors = []
     max_tick = max(list(planned.keys()) + list(simulated.keys()), default=0)
     for tick in range(0, max_tick + 1):
         expected = sorted((item["instrument"], item["pitch"]) for item in planned.get(tick, []))
@@ -537,10 +555,21 @@ def compare(plan: dict, simulation: dict, sound_range: float = 48.0,
                 if (candidate["instrument"], candidate["pitch"]) == (event["instrument"], event["pitch"]):
                     if event["volume"] is not None and candidate.get("volume_plan") is not None:
                         volume_errors.append(abs(event["volume"] - candidate["volume_plan"]))
-                    if event["volume"] is not None and candidate.get("volume_nbs") is not None:
-                        nbs_errors.append(abs(event["volume"] - candidate["volume_nbs"]))
                     pool.remove(candidate)
                     break
+
+    # 实际"听到"的音量：同一 tick、同音高、同音色的左右音符盒会叠加
+    heard_sim: Dict[Tuple[int, int, int], float] = defaultdict(float)
+    for event in events:
+        if event["volume"] is not None:
+            heard_sim[(event["song_tick"], event["instrument"], event["pitch"])] += event["volume"]
+    heard_plan: Dict[Tuple[int, int, int], float] = defaultdict(float)
+    for tick, items in planned.items():
+        for item in items:
+            if item.get("side", 0) < 0:
+                continue          # 左右成对的音符只计一次，避免重复累加
+            heard_plan[(tick, item["instrument"], item["pitch"])] += item.get("volume_nbs") or 0.0
+    heard_errors = [abs(heard_sim.get(key, 0.0) - value) for key, value in heard_plan.items()]
 
     matched = sum(1 for tick in range(0, max_tick + 1)
                   if sorted((i["instrument"], i["pitch"]) for i in planned.get(tick, []))
@@ -554,8 +583,8 @@ def compare(plan: dict, simulation: dict, sound_range: float = 48.0,
         "planned_notes": sum(len(v) for v in planned.values()),
         "volume_mean_error": (sum(volume_errors) / len(volume_errors)) if volume_errors else 0.0,
         "volume_max_error": max(volume_errors) if volume_errors else 0.0,
-        "nbs_volume_mean_error": (sum(nbs_errors) / len(nbs_errors)) if nbs_errors else 0.0,
-        "nbs_volume_max_error": max(nbs_errors) if nbs_errors else 0.0,
+        "heard_mean_error": (sum(heard_errors) / len(heard_errors)) if heard_errors else 0.0,
+        "heard_max_error": max(heard_errors) if heard_errors else 0.0,
         "left_notes": sum(1 for event in events if event["side"] < 0),
         "right_notes": sum(1 for event in events if event["side"] > 0),
     }
@@ -570,8 +599,8 @@ def format_report(result: dict) -> str:
         f"  逐 tick 完全一致  : {stats['matched_ticks']}/{stats['ticks']}",
         f"  模拟音符事件      : {stats['note_events']}（计划 {stats['planned_notes']}）",
         f"  左右声道音符      : 左 {stats['left_notes']} / 右 {stats['right_notes']}",
-        f"  音量误差(计划)    : 平均 {stats['volume_mean_error']:.4f}，最大 {stats['volume_max_error']:.4f}",
-        f"  音量误差(对NBS)   : 平均 {stats['nbs_volume_mean_error']:.4f}，最大 {stats['nbs_volume_max_error']:.4f}",
+        f"  音量误差(单盒)    : 平均 {stats['volume_mean_error']:.4f}，最大 {stats['volume_max_error']:.4f}",
+        f"  音量误差(左右叠加): 平均 {stats['heard_mean_error']:.4f}，最大 {stats['heard_max_error']:.4f}",
     ]
     if stats["missing_ticks"]:
         lines.append(f"  有缺失的 tick     : {stats['missing_ticks'][:10]}")

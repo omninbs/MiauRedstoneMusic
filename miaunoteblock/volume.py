@@ -1,18 +1,18 @@
-"""音量 / 声像模型。
+"""音量模型。
 
-音符盒在 Java 版里以 fixed volume = 3 发声，可听半径 = 3 × 16 = 48 格，
-并且在这个半径内**线性衰减**。因此「音符盒离玩家多远」就等价于「音量百分比」：
+音符盒固定音量、可听半径 48 格并线性衰减：
 
-    音量百分比 ≈ (1 - 距离 / 48) × 100%
+    单个音符盒的听感音量 ≈ 1 − 距离 / 48
 
-本模块负责把 NBS 的 velocity / panning 换算成：
-- ``side``：音符应该放在中心轴的左侧(-1)还是右侧(+1)（由 curve.py 综合声像与平衡决定）；
-- ``distance``：音符盒到中心轴的横向距离（整数格），
-  使得 ``sqrt(distance² + 垂直偏移²)`` 尽量接近目标三维距离。
+左右声道各放一个同音高、同 tick 的音符盒时，两盒会叠加，所以每个盒子
+只需要承担 ``V / 2``：
+
+    距离 d = 48 × (1 − V/2)      （V=100% → 24 格，V=0 → 48 格）
+
+主音轨不参与这套换算：由用户指定并固定按满音量处理。
 """
 
 SOUND_RANGE = 48.0          # 音符盒可听半径（格）
-MIN_DISTANCE = 2            # 离中心轴的最小横向距离（格）：再近就会与中心走廊重叠
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -61,8 +61,13 @@ def layer_pan(song, layer_id: int) -> float:
 
 
 def target_distance(volume: float, sound_range: float = SOUND_RANGE) -> float:
-    """目标音量 → 目标三维距离（格）。"""
-    return clamp(sound_range * (1.0 - clamp(volume, 0.0, 1.0)), 0.0, sound_range)
+    """单个音符盒要独自达到音量 V 时需要的距离。"""
+    return sound_range * (1.0 - clamp(volume, 0.0, 1.0))
+
+
+def dual_distance(volume: float, sound_range: float = SOUND_RANGE) -> float:
+    """左右各一个音符盒、每盒承担 V/2 时需要的距离。"""
+    return sound_range * (1.0 - clamp(volume, 0.0, 1.0) / 2.0)
 
 
 def lateral_from_3d(target: float, vertical: float) -> float:
@@ -71,8 +76,9 @@ def lateral_from_3d(target: float, vertical: float) -> float:
     return squared ** 0.5 if squared > 0 else 0.0
 
 
-def volume_from_distance(distance: float, sound_range: float = SOUND_RANGE) -> float:
-    """三维距离 → 相对音量（0~1），与游戏内线性衰减一致。"""
+def volume_from_distance(distance: float,
+                         sound_range: float = SOUND_RANGE) -> float:
+    """三维距离 → 单个音符盒的相对音量（0~1），线性衰减。"""
     if sound_range <= 0:
         return 0.0
     return clamp(1.0 - distance / sound_range, 0.0, 1.0)
@@ -81,31 +87,3 @@ def volume_from_distance(distance: float, sound_range: float = SOUND_RANGE) -> f
 def distance_3d(ax: float, ay: float, az: float,
                 bx: float, by: float, bz: float) -> float:
     return ((ax - bx) ** 2 + (ay - by) ** 2 + (az - bz) ** 2) ** 0.5
-
-
-def plan_repeater_count(max_distance: float) -> int:
-    """按最远横向距离，决定每条分支固定要串几个中继器。
-
-    固定数量是「所有音符同时发声」的前提：分支里的每级中继器都会带来
-    2 个游戏 tick 延迟，只有全曲所有分支延迟一致，各事件之间的相对
-    时间才不会漂移。
-
-    可达距离：
-        n = 0 → 最远 17 格
-        n ≥ 1 → 最远 16n + 2 格
-    """
-    if max_distance <= 17:
-        return 0
-    for count in (1, 2, 3):
-        if 16 * count + 2 >= max_distance:
-            return count
-    return 3
-
-
-def branch_distance_range(repeaters: int) -> tuple:
-    """该中继器数量下，横向距离的合法区间（含端点）。"""
-    if repeaters <= 0:
-        return MIN_DISTANCE, 17
-    low = repeaters + 2
-    high = 16 * repeaters + 2
-    return max(MIN_DISTANCE, low), min(47, high)

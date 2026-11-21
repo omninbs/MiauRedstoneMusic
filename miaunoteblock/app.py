@@ -60,7 +60,7 @@ from .layout import calc_nest_layers, compute_min_radius, compute_offsets
 from .lyrics import build_lyrics_chain, edit_lyrics_menu
 from .particles import build_particle_commands, edit_particle_settings
 from .curve import build_curve_commands
-from .simulate import Simulator, compare, format_report, load_schem
+from .simulate import Simulator, check_structure, compare, format_report, load_schem
 
 LAYOUT_STYLES = {
     "1": ("flat", "平铺"),
@@ -209,16 +209,53 @@ def edit_groups_interactive_virtual(virtual_layers: List[dict], song) -> Dict[in
 
 # ── 排版 ─────────────────────────────────────────────────────
 
+def edit_master_layers(song, config: dict) -> None:
+    """选择主音轨（固定满音量、放在中心轴走廊上下）。"""
+    print(Ansi.title("\n=== 主音轨（固定满音量） ==="))
+    print(Ansi.info("主音轨无视 NBS 力度，固定按满音量放在中心轴走廊的上方/下方。"))
+    notes_by_layer = defaultdict(list)
+    for note in song.notes:
+        notes_by_layer[note.layer].append(note)
+    for layer_id in sorted(notes_by_layer):
+        layer_obj = next((layer for layer in song.layers if layer.id == layer_id), None)
+        name = layer_obj.name if layer_obj and layer_obj.name else f"音轨{layer_id}"
+        mark = "*" if layer_id in (config.get("curve_master_layers") or []) else " "
+        print(f"  {mark}{layer_id}: {Ansi.colorize(name, Ansi.WHITE)}")
+    print(Ansi.dim(f"当前主音轨: {config.get('curve_master_layers') or '无'}"))
+    raw = input(Ansi.prompt("主音轨 ID（空格分隔，c=清空，回车=不改）: ")).strip()
+    if not raw:
+        return
+    if raw.lower() in ("c", "clear"):
+        config["curve_master_layers"] = []
+        print(Ansi.success("已清空主音轨"))
+        return
+    selected = []
+    for token in raw.replace(",", " ").split():
+        try:
+            layer_id = int(token)
+        except ValueError:
+            print(Ansi.error(f"忽略无效音轨 ID: {token}"))
+            continue
+        if layer_id in notes_by_layer:
+            selected.append(layer_id)
+        else:
+            print(Ansi.error(f"忽略不存在的音轨 ID: {layer_id}"))
+    config["curve_master_layers"] = sorted(set(selected))
+    print(Ansi.success(f"主音轨已设为: {config['curve_master_layers'] or '无'}"))
+
+
 def edit_curve_layout(config: dict) -> None:
     """曲线音量排版设置（主菜单 [c] 与排版菜单 [8] 共用）。"""
     print(Ansi.title("\n=== 曲线音量排版（新）==="))
-    print(Ansi.dim("音量 ≈ 1 − 音符盒到中心轴的横向距离 / 48；左右声道关于延伸轴对称。"))
+    print(Ansi.dim("普通音轨左右各一盒，每盒承担 V/2，距离 d=48×(1−V/2)；"
+                   "主音轨固定满音量，放在中心轴走廊上下。"))
     config["layout_style"] = "curve"
     config["curve_lane_spacing"] = ask_number(
-        "车道垂直间距", config.get("curve_lane_spacing", 3), int, 2)
-    config["curve_branch_repeaters"] = ask_number(
-        "每条分支固定中继器数 (-1=自动)", config.get("curve_branch_repeaters", -1),
-        int, -1, 3)
+        "普通车道垂直间距", config.get("curve_lane_spacing", 3), int, 3)
+    config["curve_corridor_height"] = ask_number(
+        "玩家走廊高度", config.get("curve_corridor_height", 2), int, 2)
+    config["curve_master_spacing"] = ask_number(
+        "主音轨垂直间距", config.get("curve_master_spacing", 3), int, 3)
     cart = input(Ansi.prompt(
         f"生成隐形矿车跟随玩家？(Y/n，当前是"
         f"{'否' if not config.get('curve_minecart', True) else '是'}): ")).strip().lower()
@@ -424,9 +461,9 @@ def print_summary(config: dict, virtual_layers: List[dict], layer_to_group: Dict
     if style == "flat":
         style_text += f" 间距={config.get('flat_spacing', 3)}"
     elif style == "curve":
-        repeaters = config.get("curve_branch_repeaters", -1)
         style_text += (f" 车道间距={config.get('curve_lane_spacing', 3)}"
-                       f" 分支中继器={'自动' if repeaters is None or repeaters < 0 else repeaters}"
+                       f" 主音轨={len(config.get('curve_master_layers') or [])}条"
+                       f" 走廊高={config.get('curve_corridor_height', 2)}"
                        f" 矿车={'开' if config.get('curve_minecart', True) else '关'}")
     elif style in ("nest_circle", "nest_square"):
         style_text += (f" 半径={config.get('layout_radius')} 层数={config.get('nest_layers')}"
@@ -486,6 +523,7 @@ def print_menu(config: dict) -> None:
     print("  [6] 粒子特效")
     print(f"  [7] 中继器模式：{'合并' if not config.get('uniform_repeater_mode') else '均匀'}（切换）")
     print("  [c] 曲线音量排版（新：距离控音量 + 隐形矿车跟随）")
+    print("  [m] 主音轨（固定满音量，放在中心轴走廊上下）")
     print("  [8] 退出")
     print(Ansi.dim("  回车 = 按当前配置生成结构"))
 
@@ -498,54 +536,31 @@ def _rel(value: int) -> str:
 
 def _launch_chain(targets: List[Tuple[object, Tuple[int, int, int]]],
                   start: Tuple[int, int, int], direction: str) -> List[str]:
-    """生成启动链：两列朝上的命令方块，分别放置与清除每个启动红石块。
+    """生成启动链：一列朝上的命令方块，逐个把启动红石块放到各轨道的输入侧。
 
-    targets 为 [(gid|None, 红石块坐标), ...]，顺序即启动顺序。
-
-    结构自带一个启动红石块，粘贴后立刻给「放置列」供电，音乐/矿车自动开始；
-    启动红石块经过一个 ``delay=4`` 中继器把「清除列」推迟 8 游戏 tick，
-    这样红石块会先存在一段时间（给主链一个上升沿），随后被清掉，
-    之后只要拆掉再放回启动红石块即可重播。
+    结构自带一个启动红石块，粘贴后立刻给第一个脉冲命令方块供电，
+    音乐与矿车自动开始，不需要玩家手动触发。红石块会保留，
+    想重播时拆掉再放回即可。
     """
     dx, _, dz = DIR_OFFSET[direction]
     start_x, start_y, start_z = start
     place_x, place_z = start_x - 5 * dx, start_z - 5 * dz
-    clear_x, clear_z = start_x - 7 * dx, start_z - 7 * dz
     if not targets:
         return []
 
-    chain = []
-    # 启动红石块：紧贴放置列第一个脉冲命令方块（y-1），结构粘贴即触发
-    chain.append(f"setblock {place_x} {start_y - 1} {place_z} minecraft:redstone_block")
-    # 中继器把信号延迟 4 红石刻（8 游戏 tick）后送到清除列下方的红石线
-    relay_x, relay_z = place_x - dx, place_z - dz
-    chain.append(f"setblock {relay_x} {start_y - 1} {relay_z} "
-                 f"minecraft:repeater[facing={direction},delay=4]")
-    wire_x, wire_z = place_x - 2 * dx, place_z - 2 * dz
-    chain.append(f"setblock {wire_x} {start_y - 1} {wire_z} minecraft:redstone_wire")
-    # 红石线必须放在实体方块上，否则进游戏会直接掉落
-    chain.append(f"setblock {wire_x} {start_y - 2} {wire_z} minecraft:white_wool")
-
+    chain = [f"setblock {place_x} {start_y - 1} {place_z} minecraft:redstone_block"]
     for index, (_, (ax, ay, az)) in enumerate(targets):
         cy = start_y + index
         place_cmd = (f"setblock {_rel(ax - place_x)} {_rel(ay - cy)} {_rel(az - place_z)} "
                      f"minecraft:redstone_block")
-        clear_cmd = (f"setblock {_rel(ax - clear_x)} {_rel(ay - cy)} {_rel(az - clear_z)} "
-                     f"minecraft:air")
         place_json = json.dumps(place_cmd)
-        clear_json = json.dumps(clear_cmd)
         if index == 0:
             chain.append(f"setblock {place_x} {cy} {place_z} "
                          f"minecraft:command_block[facing=up]{{Command:{place_json}}}")
-            chain.append(f"setblock {clear_x} {cy} {clear_z} "
-                         f"minecraft:command_block[facing=up]{{Command:{clear_json}}}")
         else:
             chain.append(f"setblock {place_x} {cy} {place_z} "
                          f"minecraft:chain_command_block[facing=up,conditional=false]"
                          f"{{Command:{place_json},auto:1b}}")
-            chain.append(f"setblock {clear_x} {cy} {clear_z} "
-                         f"minecraft:chain_command_block[facing=up,conditional=false]"
-                         f"{{Command:{clear_json},auto:1b}}")
     return chain
 
 
@@ -642,7 +657,7 @@ def _verify_curve(schem_path: str, meta: dict, max_tick: int) -> None:
     """加载刚保存的结构，模拟红石并输出统计（Fnbs == Fmc 验收）。"""
     plan = meta["plan"]
     player = meta["player"]
-    total_blocks = len(meta.get("activations", {})) + meta.get("block_count", 0)
+    total_blocks = meta.get("block_count", 0) + len(meta.get("activations", {}))
     estimate = total_blocks * (2 * max_tick + 8)
     if estimate > 12_000_000:
         print(Ansi.prompt("提示：歌曲较长，已跳过结构自检（可用 tests/test_curve_volume.py 单独验证）"))
@@ -654,9 +669,14 @@ def _verify_curve(schem_path: str, meta: dict, max_tick: int) -> None:
         print(Ansi.error(f"结构回读失败，跳过自检：{exc}"))
         return
     simulator = Simulator(world)
+    issues = check_structure(world)
+    if issues:
+        print(Ansi.error(f"结构检查：{len(issues)} 处方块进游戏会掉落/失效，例如 {issues[:3]}"))
+    else:
+        print(Ansi.success("结构检查：所有红石线都有垫底方块"))
     initial = (player["x0"] + 0.5, player["y"], player["z"])
     simulation = simulator.run(list(meta["activations"].values()),
-                               max_ticks=2 * (max_tick + 2) + 2 * plan["branch_repeaters"] + 8,
+                               max_ticks=2 * (max_tick + 2) + 8,
                                initial_player=initial)
     result = compare(plan, simulation, sound_range=plan["sound_range"])
     print(Ansi.title("──────── 结构自检 ────────"))
@@ -744,6 +764,8 @@ def _interactive() -> None:
                         layer_to_group, virtual_layers, song)
         elif choice.lower() in ("c", "curve"):
             edit_curve_layout(config)
+        elif choice.lower() == "m":
+            edit_master_layers(song, config)
         elif choice == "3":
             edit_stereo_layers(song, config)
             virtual_layers = build_virtual_layers(song, config.get('stereo_layers', []))

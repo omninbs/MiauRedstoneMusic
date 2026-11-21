@@ -26,10 +26,12 @@ DEFAULT_CONFIG = {
     "uniform_repeater_mode": False,
     "group_staircase_modes": {},  # 每组生成模式：{"0": "staircase", "1": "default", ...}
     # ── 曲线音量排版（layout_style = "curve"）──────────────────
-    "curve_lane_spacing": 3,      # 车道之间的垂直间距（格）
-    "curve_branch_repeaters": -1,  # 每条分支固定中继器数；-1 = 自动
-    "curve_minecart": True,       # 生成隐形矿车跟随玩家的命令方块链
-    "curve_sound_range": 48.0,    # 音符盒可听半径（音量公式的分母）
+    "curve_lane_spacing": 3,          # 普通车道之间的垂直间距（格）
+    "curve_minecart": True,           # 生成隐形矿车跟随玩家的命令方块链
+    "curve_sound_range": 48.0,        # 音符盒可听半径（音量公式的分母）
+    "curve_master_layers": [],        # 主音轨（原始音轨 id，固定满音量、放中心轴上）
+    "curve_master_spacing": 3,        # 主音轨之间的垂直间距（格）
+    "curve_corridor_height": 2,       # 玩家走廊高度（格）
     # ── 歌词（/mpe text chain 逐字粒子字幕）──────────────────────
     "lyrics_color": "white",
     "lyrics_scale": 10.0,

@@ -108,20 +108,27 @@ MiauRedstoneMusic can arrange each group with a different footprint, so the reds
 
 ### Curve volume layout
 
-Note blocks always play at a fixed volume with a 48-block linear falloff, so the curve layout
-turns volume into geometry:
+The curve layout encodes **volume** as the track's distance from the center axis and uses left/right summing to reproduce NBS velocity.
 
-```
-volume ≈ (1 − lateral distance from the center axis / 48)
-```
+**Master tracks (menu `[m]`, multi-select)**
+- Always full volume, ignoring NBS velocity.
+- Placed on the center axis above/below the player corridor, evenly split between top and bottom.
+- The corridor is 2 blocks tall by default; the nearest master track is 3 blocks away (about 94% perceived volume).
 
-- Every group becomes a **lane** (stacked along Y). Each side of a lane has its own repeater backbone that advances 2 blocks per song tick.
-- A tap block on the backbone (wool strongly powered by a repeater) sends a **branch** along ±Z; the note block at the end of the branch is the sound source.
-- Each branch carries a **fixed number of repeaters** (0–3, chosen automatically). They refresh the 15-block signal limit and delay the whole side by exactly `2n` game ticks — constant for the entire song, so events never drift.
-- Stereo copies are strictly mirrored; centered notes alternate sides so two very different volumes do not share one branch.
-- Each note block sits next to the player's corridor at `z = 0.5`, which stays empty. A command-block chain summons an invisible minecart, mounts the nearest player and teleports it once per tick so you always stay on the center axis. The uniform repeater mode (menu `[7]`) gives the smoothest cart motion; the compact mode saves blocks but jumps further during rests.
-- After saving, the tool re-loads the `.schem`, simulates redstone tick by tick and prints `Fnbs(t) == Fmc(t)` stats. You can also run `python tests/test_curve_volume.py`.
-- Lyrics and particle chains are skipped in this layout because they rely on the linear coordinates.
+**All other tracks**
+- One note block on each side (mirrored about the center axis), each carrying `V/2`: `d = 48 × (1 − V/2)`, so V=100% → 24 blocks, V=0 → 48 blocks.
+- The two sides sum back to the NBS volume, which is why anything within 24 blocks counts as full volume.
+- The track moves 3 blocks along +X per song tick; its lateral position follows the distance, so it **bends like a semicircle**.
+- Exactly one repeater per tick (2 game ticks). Redstone wire is instantaneous, so bending never changes timing.
+- A single wire run is limited to 15 blocks, so the track moves at most 13 blocks sideways per tick; blank ticks share the movement and sharper jumps are smoothed and reported.
+
+**General**
+- Wool sits under every wire, repeater and command block, so nothing pops off. The structure ships with its own start redstone block, so **pasting starts playback automatically**.
+- The player rides along `z = 0.5`; ordinary tracks stay at least 24 blocks away and master tracks sit above/below, so the corridor is always empty.
+- A command-block chain summons an invisible minecart, mounts the nearest player and teleports it once per tick.
+- Multiple notes on the same side and tick share one track (the 2nd/3rd stack further out with slightly lower volume).
+- After saving, the tool re-loads the `.schem`, checks for floating blocks and simulates redstone tick by tick, reporting the simulated left+right volume against NBS velocity.
+- Lyrics and particle chains are skipped in this layout.
 
 ---
 

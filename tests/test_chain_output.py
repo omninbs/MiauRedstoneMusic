@@ -1003,11 +1003,12 @@ def test_full_structure():
         chk.ok("minecraft:chain_command_block" in blocks.get(coord, ""),
                f"后续环应为链式命令方块: {blocks.get(coord, '')[:70]}")
 
-    # 清除用的红石块与放置用的一一对应
-    clear_targets = [text for text in command_texts
-                     if text.startswith("setblock ") and text.endswith("minecraft:air")]
-    chk.ok(len(clear_targets) == len(place_targets),
-           f"清除命令 {len(clear_targets)} != 放置命令 {len(place_targets)}")
+    # 结构自带一个启动红石块，粘贴后自动触发，不再有「放一下又清掉」的清除链
+    auto_start = [coord for coord, block in blocks.items()
+                  if block == "minecraft:redstone_block"]
+    chk.ok(len(auto_start) == 1, f"启动红石块数量 {len(auto_start)} != 1")
+    chk.ok(not any(text.startswith("setblock ") and text.endswith("minecraft:air")
+                   for text in command_texts), "不应再生成清除命令")
     return chk.report("full")
 
 
