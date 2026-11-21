@@ -13,6 +13,7 @@
 """
 
 SOUND_RANGE = 48.0          # 音符盒可听半径（格）
+LISTENER_EYE = 1.6          # 玩家站立时耳朵相对脚底的高度（格）
 
 
 def clamp(value: float, low: float, high: float) -> float:

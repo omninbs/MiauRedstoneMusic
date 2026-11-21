@@ -10,7 +10,6 @@ import mcschematic
 
 from .constants import (
     DIR_OFFSET,
-    FALLING_BLOCK_SUPPORT,
     INSTRUMENT_BLOCK_MAP,
     OPPOSITE_FACING,
     SIDE_AXIS,
@@ -222,7 +221,9 @@ def build_all_commands_virtual(
     use_lamp: bool = False,
     uniform_repeater_mode: bool = False,   # 原 repeater_gap_fill
     group_staircase_modes: Dict[str, str] = None,  # 每组生成模式
-    note_events: List[Tuple[int, int, int, int, int, int]] = None  # 收集 (gid, vid, tick, x, y, z)
+    note_events: List[Tuple[int, int, int, int, int, int]] = None,  # 收集 (gid, vid, tick, x, y, z)
+    support_block: str = "minecraft:white_wool",
+    empty_block: str = "minecraft:oak_planks",
 ) -> Tuple[List[str], Dict[int, Tuple[int, int, int]]]:
     dx, dy, dz = DIR_OFFSET[direction]
     facing = OPPOSITE_FACING[direction]
@@ -230,14 +231,7 @@ def build_all_commands_virtual(
     groups = sorted(set(layer_to_group.values()))
     if group_staircase_modes is None:
         group_staircase_modes = {}
-    base_block = "minecraft:redstone_lamp" if use_lamp else "minecraft:white_wool"
-
-    if direction in ("east", "west"):
-        axis_step = dx
-        axis_key = 'x'
-    else:
-        axis_step = dz
-        axis_key = 'z'
+    base_block = "minecraft:redstone_lamp" if use_lamp else support_block
 
     # 收集每个组在每个tick的音符（同时记录音符所属的虚拟层 vid，供粒子特效定位）
     if note_events is None:
@@ -257,7 +251,6 @@ def build_all_commands_virtual(
     base_x, base_y, base_z = base
     activation_positions = {}
     group_pos = {}
-    fill_cursor = {}
 
     # 初始化各组参数
     for i, gid in enumerate(groups):
@@ -281,55 +274,39 @@ def build_all_commands_virtual(
 
         group_pos[gid] = (relay_x, relay_y, relay_z)
 
-        if axis_key == 'x':
-            axis_origin = relay_x
-        else:
-            axis_origin = relay_z
-        fill_cursor[gid] = axis_origin - 2 * axis_step
-
     all_cmds = ["# 红石音乐生成器 (中继器链 + 辅助方块)"]
-    SEGMENT = 32
     dropped_notes = 0
 
-    def get_fixed_and_y(gid):
-        i = groups.index(gid)
-        y_off, side_off = group_offsets[i]
-        y0 = base_y + y_off
-        if axis_key == 'x':
-            fixed = base_z + (side_off if side_axis == 'z' else 0)
-        else:
-            fixed = base_x + (side_off if side_axis == 'x' else 0)
-        return fixed, y0
+    def add_block(x, y, z, block):
+        all_cmds.append(f"setblock {x} {y} {z} {block}")
 
-    def ensure_support(gid, target_coord):
-        nonlocal fill_cursor
-        cursor = fill_cursor[gid]
-        if axis_step > 0:
-            need = target_coord > cursor
+    def add_relay(x, y, z, delay_val):
+        """中继器 + 正下方一块支撑方块。"""
+        add_block(x, y - 1, z, support_block)
+        add_block(x, y, z, f"minecraft:repeater[facing={facing},delay={delay_val}]")
+
+    def add_empty(x, y, z):
+        """空 tick 占位方块 + 正下方支撑。"""
+        add_block(x, y - 1, z, support_block)
+        add_block(x, y, z, empty_block)
+
+    def add_note(x, y, z, note, vid, tick):
+        """音符盒 + 正确底座（乐器方块或支撑方块）。"""
+        pitch = note_to_pitch(get_note_key(note))
+        inst = note.instrument
+        add_block(x, y, z, f"minecraft:note_block[note={pitch}]")
+        note_events.append((gid, vid, tick, x, y, z))
+        if inst == 0:
+            add_block(x, y - 1, z, support_block)
         else:
-            need = target_coord < cursor
-        if not need:
-            return
-        cur = cursor + axis_step
-        if axis_step > 0:
-            seg_end = cur + SEGMENT - 1
-        else:
-            seg_end = cur - (SEGMENT - 1)
-        fixed, y0 = get_fixed_and_y(gid)
-        if axis_key == 'x':
-            x1, x2 = (cur, seg_end) if cur <= seg_end else (seg_end, cur)
-            all_cmds.append(f"fill {x1} {y0-1} {fixed} {x2} {y0} {fixed} {base_block}")
-        else:
-            z1, z2 = (cur, seg_end) if cur <= seg_end else (seg_end, cur)
-            all_cmds.append(f"fill {fixed} {y0-1} {z1} {fixed} {y0} {z2} {base_block}")
-        fill_cursor[gid] = seg_end
+            add_block(x, y - 1, z, INSTRUMENT_BLOCK_MAP.get(inst, 'minecraft:stone'))
+            if inst == 3:
+                add_block(x, y - 2, z, support_block)
 
     # 放置起始中继器
     for gid in groups:
         x, y, z = group_pos[gid]
-        target_coord = x if axis_key == 'x' else z
-        ensure_support(gid, target_coord)
-        all_cmds.append(f"setblock {x} {y} {z} minecraft:repeater[facing={facing},delay=1]")
+        add_relay(x, y, z, 1)
 
     prev_valid_tick = None
     for valid_tick in valid_ticks:
@@ -352,20 +329,16 @@ def build_all_commands_virtual(
             for gid in groups:
                 x, y, z = group_pos[gid]
                 for idx, delay_val in enumerate(delays):
-                    # 放置辅助方块（白色羊毛），将被当前中继器充能
+                    # 放置辅助方块（支撑方块），将被当前中继器充能
                     connector_x = x + dx
                     connector_z = z + dz if side_axis == 'z' else z
-                    ensure_support(gid, connector_x if axis_key == 'x' else connector_z)
-                    all_cmds.append(f"setblock {connector_x} {y} {connector_z} minecraft:white_wool")
+                    add_block(connector_x, y - 1, connector_z, support_block)
+                    add_block(connector_x, y, connector_z, support_block)
 
                     # 在辅助方块前方放置下一个中继器
                     next_repeater_x = connector_x + dx
                     next_repeater_z = connector_z + dz if side_axis == 'z' else connector_z
-                    ensure_support(gid, next_repeater_x if axis_key == 'x' else next_repeater_z)
-                    all_cmds.append(
-                        f"setblock {next_repeater_x} {y} {next_repeater_z} "
-                        f"minecraft:repeater[facing={facing},delay={delay_val}]"
-                    )
+                    add_relay(next_repeater_x, y, next_repeater_z, delay_val)
                     # 更新位置
                     x, y, z = next_repeater_x, y, next_repeater_z
                 group_pos[gid] = (x, y, z)
@@ -375,73 +348,21 @@ def build_all_commands_virtual(
             x, y, z = group_pos[gid]
             note_x = x + dx
             note_z = z + dz if side_axis == 'z' else z
-            target_coord = note_x if axis_key == 'x' else note_z
-            ensure_support(gid, target_coord)
 
             notes = group_tick_notes[gid].get(valid_tick, [])
             note_count = len(notes)
             is_stair = group_staircase_modes.get(str(gid), "default") == "staircase"
 
             if note_count == 0:
-                # 空 tick：放置 base_block（中继器直接充能该方块）
-                all_cmds.append(f"setblock {note_x} {y} {note_z} {base_block}")
-                # 然后放置后续中继器（延续信号）
-                next_relay_x = note_x + dx
-                next_relay_z = note_z + dz if side_axis == 'z' else note_z
-                ensure_support(gid, next_relay_x if axis_key == 'x' else next_relay_z)
-                all_cmds.append(f"setblock {next_relay_x} {y} {next_relay_z} minecraft:repeater[facing={facing},delay=1]")
-                group_pos[gid] = (next_relay_x, y, next_relay_z)
+                add_empty(note_x, y, note_z)
             elif note_count == 1:
                 note, vid = notes[0]
-                pitch = note_to_pitch(get_note_key(note))
-                inst = note.instrument
-                all_cmds.append(f"setblock {note_x} {y} {note_z} minecraft:note_block[note={pitch}]")
-                note_events.append((gid, vid, valid_tick, note_x, y, note_z))
-                if inst != 0:
-                    all_cmds.append(f"setblock {note_x} {y-1} {note_z} {INSTRUMENT_BLOCK_MAP.get(inst, 'minecraft:stone')}")
-                    if inst == 3:
-                        all_cmds.append(f"setblock {note_x} {y-2} {note_z} {FALLING_BLOCK_SUPPORT}")
-                # 放置后续中继器
-                next_relay_x = note_x + dx
-                next_relay_z = note_z + dz if side_axis == 'z' else note_z
-                ensure_support(gid, next_relay_x if axis_key == 'x' else next_relay_z)
-                all_cmds.append(f"setblock {next_relay_x} {y} {next_relay_z} minecraft:repeater[facing={facing},delay=1]")
-                group_pos[gid] = (next_relay_x, y, next_relay_z)
-            elif note_count == 2:
-                side_step = 1
-                side_y = y - 1 if is_stair else y  # 阶梯模式：侧边音符下降一格
-                if side_axis == 'z':
-                    left_pos = (note_x, side_y, note_z - side_step)
-                    right_pos = (note_x, side_y, note_z + side_step)
-                else:
-                    left_pos = (note_x - side_step, side_y, note_z)
-                    right_pos = (note_x + side_step, side_y, note_z)
-                sorted_notes = sorted(notes, key=lambda nv: nv[0].layer)
-                all_cmds.append(f"setblock {note_x} {y} {note_z} {base_block}")
-                for pos, (note, vid) in zip([left_pos, right_pos], sorted_notes):
-                    px, py, pz = pos
-                    pitch = note_to_pitch(get_note_key(note))
-                    inst = note.instrument
-                    all_cmds.append(f"setblock {px} {py} {pz} minecraft:note_block[note={pitch}]")
-                    note_events.append((gid, vid, valid_tick, px, py, pz))
-                    if inst != 0:
-                        all_cmds.append(f"setblock {px} {py-1} {pz} {INSTRUMENT_BLOCK_MAP.get(inst, 'minecraft:stone')}")
-                        if inst == 3:
-                            all_cmds.append(f"setblock {px} {py-2} {pz} {FALLING_BLOCK_SUPPORT}")
-                next_relay_x = note_x + dx
-                next_relay_z = note_z + dz if side_axis == 'z' else note_z
-                ensure_support(gid, next_relay_x if axis_key == 'x' else next_relay_z)
-                all_cmds.append(f"setblock {next_relay_x} {y} {next_relay_z} minecraft:repeater[facing={facing},delay=1]")
-                group_pos[gid] = (next_relay_x, y, next_relay_z)
-            else:  # >=3
+                add_note(note_x, y, note_z, note, vid, valid_tick)
+            else:
                 if note_count > 3:
                     # 一个事件格最多摆 3 个音符盒，多余的会被丢弃（生成结束后统一提示）
                     dropped_notes += note_count - 3
                 sorted_pairs = sorted(notes, key=lambda nv: nv[0].layer)
-                mid_pair = sorted_pairs[1] if len(sorted_pairs) > 1 else sorted_pairs[0]
-                mid_note, mid_vid = mid_pair
-                left_note, left_vid = sorted_pairs[0]
-                right_note, right_vid = sorted_pairs[-1]
                 side_step = 1
                 side_y = y - 1 if is_stair else y  # 阶梯模式：侧边音符下降一格
                 if side_axis == 'z':
@@ -450,29 +371,26 @@ def build_all_commands_virtual(
                 else:
                     left_pos = (note_x - side_step, side_y, note_z)
                     right_pos = (note_x + side_step, side_y, note_z)
-                pitch_mid = note_to_pitch(get_note_key(mid_note))
-                inst_mid = mid_note.instrument
-                all_cmds.append(f"setblock {note_x} {y} {note_z} minecraft:note_block[note={pitch_mid}]")
-                note_events.append((gid, mid_vid, valid_tick, note_x, y, note_z))
-                if inst_mid != 0:
-                    all_cmds.append(f"setblock {note_x} {y-1} {note_z} {INSTRUMENT_BLOCK_MAP.get(inst_mid, 'minecraft:stone')}")
-                    if inst_mid == 3:
-                        all_cmds.append(f"setblock {note_x} {y-2} {note_z} {FALLING_BLOCK_SUPPORT}")
-                for pos, (note, vid) in zip([left_pos, right_pos], [(left_note, left_vid), (right_note, right_vid)]):
-                    px, py, pz = pos
-                    pitch = note_to_pitch(get_note_key(note))
-                    inst = note.instrument
-                    all_cmds.append(f"setblock {px} {py} {pz} minecraft:note_block[note={pitch}]")
-                    note_events.append((gid, vid, valid_tick, px, py, pz))
-                    if inst != 0:
-                        all_cmds.append(f"setblock {px} {py-1} {pz} {INSTRUMENT_BLOCK_MAP.get(inst, 'minecraft:stone')}")
-                        if inst == 3:
-                            all_cmds.append(f"setblock {px} {py-2} {pz} {FALLING_BLOCK_SUPPORT}")
-                next_relay_x = note_x + dx
-                next_relay_z = note_z + dz if side_axis == 'z' else note_z
-                ensure_support(gid, next_relay_x if axis_key == 'x' else next_relay_z)
-                all_cmds.append(f"setblock {next_relay_x} {y} {next_relay_z} minecraft:repeater[facing={facing},delay=1]")
-                group_pos[gid] = (next_relay_x, y, next_relay_z)
+
+                if note_count == 2:
+                    # 中间放 base_block 作为支撑/连接，两侧各一个音符盒
+                    add_block(note_x, y - 1, note_z, support_block)
+                    add_block(note_x, y, note_z, base_block)
+                    pairs = list(zip([left_pos, right_pos], sorted_pairs))
+                else:
+                    mid_note, mid_vid = sorted_pairs[1]
+                    add_note(note_x, y, note_z, mid_note, mid_vid, valid_tick)
+                    pairs = list(zip([left_pos, right_pos],
+                                     [sorted_pairs[0], sorted_pairs[-1]]))
+
+                for pos, (note, vid) in pairs:
+                    add_note(pos[0], pos[1], pos[2], note, vid, valid_tick)
+
+            # 后续中继器（延续信号）
+            next_relay_x = note_x + dx
+            next_relay_z = note_z + dz if side_axis == 'z' else note_z
+            add_relay(next_relay_x, y, next_relay_z, 1)
+            group_pos[gid] = (next_relay_x, y, next_relay_z)
 
         prev_valid_tick = valid_tick
 

@@ -355,5 +355,29 @@ def compute_offsets(
             pos_dict[gid] = (0, start + i * spacing)
 
     return [pos_dict[gid] for gid in groups]
+
+
+def apply_offset_overrides(groups: List[int], offsets: List[Tuple[int, int]],
+                           config: dict) -> List[Tuple[int, int]]:
+    """用配置里的 ``group_offsets`` 覆盖（或微调）每组的起始位置。
+
+    只有「可以手动编辑轨道」的排版才会带这个覆盖；音量控制排版的落点由
+    音量公式决定，不允许手动改。
+    """
+    overrides = config.get("group_offsets") or {}
+    if not isinstance(overrides, dict):
+        return list(offsets)
+    applied = []
+    for index, gid in enumerate(groups):
+        y_off, side_off = offsets[index]
+        raw = overrides.get(str(gid))
+        if isinstance(raw, dict):
+            try:
+                y_off = int(raw.get("y", y_off))
+                side_off = int(raw.get("side", side_off))
+            except (TypeError, ValueError):
+                pass
+        applied.append((y_off, side_off))
+    return applied
 # ── 命令生成（基于虚拟层和组映射）─────────────────────────────────
 

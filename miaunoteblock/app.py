@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """MiauRedstoneMusic —— NBS 转红石音乐结构（.schem）。
 
+默认启动本地网页工作台（``python -m miaunoteblock``）；``--console`` 使用归档的
 文本控制台菜单：
+
 - 音符 → 中继器链 + 音符盒（立体声 / 平铺 / 圆 / 方 / 半圆 / 嵌套）
 - 歌词 → 一个脉冲命令方块里的 ``/mpe text chain``（MiauParticleEffects 粒子字幕）
 - 粒子 → 每个参与组的 ``/mpe noteblock chain`` 弹力球
@@ -56,7 +58,12 @@ from .instruments import (
     rearrange_tracks_by_instrument,
     vertical_compress,
 )
-from .layout import calc_nest_layers, compute_min_radius, compute_offsets
+from .layout import (
+    apply_offset_overrides,
+    calc_nest_layers,
+    compute_min_radius,
+    compute_offsets,
+)
 from .lyrics import build_lyrics_chain, edit_lyrics_menu
 from .particles import build_particle_commands, edit_particle_settings
 from .curve import build_curve_commands
@@ -70,7 +77,7 @@ LAYOUT_STYLES = {
     "5": ("semisquare", "半方形"),
     "6": ("nest_circle", "嵌套圆"),
     "7": ("nest_square", "嵌套方"),
-    "8": ("curve", "曲线音量 + 矿车跟随"),
+    "8": ("curve", "音量控制 + 矿车跟随"),
 }
 STYLE_LABELS = {key: label for key, label in LAYOUT_STYLES.values()}
 
@@ -245,8 +252,8 @@ def edit_master_layers(song, config: dict) -> None:
 
 
 def edit_curve_layout(config: dict) -> None:
-    """曲线音量排版设置（主菜单 [c] 与排版菜单 [8] 共用）。"""
-    print(Ansi.title("\n=== 曲线音量排版（新）==="))
+    """音量控制排版设置（主菜单 [c] 与排版菜单 [8] 共用）。"""
+    print(Ansi.title("\n=== 音量控制排版（新）==="))
     print(Ansi.dim("普通音轨左右各一盒，每盒承担 V/2，距离 d=48×(1−V/2)；"
                    "主音轨固定满音量，放在中心轴走廊上下。"))
     config["layout_style"] = "curve"
@@ -263,7 +270,7 @@ def edit_curve_layout(config: dict) -> None:
         config["curve_minecart"] = True
     elif cart in ("n", "no", "否"):
         config["curve_minecart"] = False
-    print(Ansi.success("已切换到曲线音量排版：生成时会带隐形矿车跟随，并在保存后自动自检"))
+    print(Ansi.success("已切换到音量控制排版：生成时会带隐形矿车跟随，并在保存后自动自检"))
 
 
 def edit_layout(num_groups: int, config: dict, layer_to_group: Dict[int, int],
@@ -522,7 +529,7 @@ def print_menu(config: dict) -> None:
     print("  [5] 歌词字幕")
     print("  [6] 粒子特效")
     print(f"  [7] 中继器模式：{'合并' if not config.get('uniform_repeater_mode') else '均匀'}（切换）")
-    print("  [c] 曲线音量排版（新：距离控音量 + 隐形矿车跟随）")
+    print("  [c] 音量控制排版（新：距离控音量 + 隐形矿车跟随）")
     print("  [m] 主音轨（固定满音量，放在中心轴走廊上下）")
     print("  [8] 退出")
     print(Ansi.dim("  回车 = 按当前配置生成结构"))
@@ -595,21 +602,41 @@ def build_commands(config: dict, song, virtual_layers: List[dict],
         plan = meta.get("plan") or {}
         if plan.get("smoothed"):
             print(Ansi.prompt(
-                f"警告：有 {plan['smoothed']} 处音量跳变超过红石线 15 格限制"
-                f"（约 66.7% 音量变化），已自动平滑；可拉长音符间隔，"
-                f"或安装解除红石线传输距离限制的模组。"))
+                f"警告：有 {plan['smoothed']} 个音符的相邻音量跨度超过红石线 15 格限制，"
+                f"已只对这些相邻音符做最小幅度平滑（其余音符不变）。"))
         if plan.get("dropped"):
             print(Ansi.prompt(
                 f"警告：同一音轨同一 tick 有 {plan['dropped']} 个音符挤在一格，"
                 f"已只保留最响的一个。"))
+        if plan.get("unreachable"):
+            print(Ansi.prompt(
+                f"警告：有 {plan['unreachable']} 个音符因轨道离走廊太远，"
+                f"满音量在几何上无法还原，已放到可达的最近位置。"))
+        if plan.get("deviations"):
+            print(Ansi.prompt(
+                f"警告：有 {plan['deviations']} 个 tick 的实际音量与 NBS 目标偏差超过 6%"
+                f"（轨道位置与目标位置冲突），可减小音轨间距或降低轨道层数。"))
+        if meta.get("note_overheads"):
+            print(Ansi.prompt(
+                f"警告：有 {meta['note_overheads']} 个音符盒正上方被占用，"
+                f"可能影响发声，请把对应轨道上下错开。"))
+        if meta.get("crossing"):
+            print(Ansi.prompt(
+                f"警告：检测到 {meta['crossing']} 处红石粉与其它轨道相邻，"
+                f"可能串线；已尽量把轨道分到不同高度层。"))
+        if meta.get("conflicts"):
+            print(Ansi.prompt(
+                f"警告：有 {len(meta['conflicts'])} 处方块位置被覆盖冲突，"
+                f"结构可能不完整。"))
         if config.get("lyrics_import") or (config.get("particles_enabled")
                                            and config.get("particles_layers")):
-            print(Ansi.prompt("提示：曲线音量排版暂不支持歌词 / 粒子轨道，本次已跳过。"))
+            print(Ansi.prompt("提示：音量控制排版暂不支持歌词 / 粒子轨道，本次已跳过。"))
         targets = sorted(activations.items(), key=lambda item: item[1])
         launch = _launch_chain(targets, (0, 0, 0), direction)
         return commands[:1] + launch + commands[1:]
 
     offsets = compute_offsets(groups, config, len(groups))
+    offsets = apply_offset_overrides(groups, offsets, config)
     group_offset_dict = {gid: offsets[index] for index, gid in enumerate(groups)}
 
     print(Ansi.info("正在预计算方块位置..."))
@@ -620,6 +647,8 @@ def build_commands(config: dict, song, virtual_layers: List[dict],
         uniform_repeater_mode=config.get("uniform_repeater_mode", False),
         group_staircase_modes=config.get("group_staircase_modes", {}),
         note_events=note_events,
+        support_block=str(config.get("support_block") or "minecraft:white_wool"),
+        empty_block=str(config.get("empty_block") or "minecraft:oak_planks"),
     )
 
     # 歌词：一个（或数个）脉冲命令方块，放在结构底部
@@ -664,7 +693,7 @@ def generate(config: dict, song, virtual_layers: List[dict], layer_to_group: Dic
                               meta_out=meta)
     style = config.get("layout_style", "flat")
     if style == "curve":
-        print(Ansi.success(f"已按「曲线音量排版」生成：{meta.get('block_count', 0)} 个方块，"
+        print(Ansi.success(f"已按「音量控制排版」生成：{meta.get('block_count', 0)} 个方块，"
                            f"车道 {len(meta.get('plan', {}).get('groups', []))} 条，"
                            f"矿车跟随 {'开' if meta.get('minecart') else '关'}"))
 
@@ -707,6 +736,11 @@ def _verify_curve(schem_path: str, meta: dict, max_tick: int) -> None:
     result = compare(plan, simulation, sound_range=plan["sound_range"])
     print(Ansi.title("──────── 结构自检 ────────"))
     print(format_report(result))
+    stats = result.get("stats") or {}
+    if not stats.get("passed") or stats.get("heard_max_error", 0.0) > 0.08:
+        print(Ansi.prompt(
+            "警告：模拟回放仍有超出容差的音符，已在几何限制内尽量调整；"
+            "如果这些音符对成品很关键，可减少同时发声的音轨或降低音量跨度。"))
 
 
 # ── 主流程 ───────────────────────────────────────────────────
@@ -727,7 +761,7 @@ def _interactive() -> None:
     clear_screen()
     print(Ansi.title("══════ MiauRedstoneMusic · NBS → 红石音乐结构 ══════"))
     print(Ansi.dim(f"作者: COM1919 | 版本: {VERSION}"))
-    print(Ansi.success("新功能：曲线音量排版 + 隐形矿车跟随 —— 进菜单后按 [c] 体验"))
+    print(Ansi.success("新功能：音量控制排版 + 隐形矿车跟随 —— 进菜单后按 [c] 体验"))
 
     raw_path = input(Ansi.prompt("NBS 文件路径 (默认 song.nbs): ")).strip().strip('"').strip("'")
     song_path = raw_path or "song.nbs"
@@ -831,11 +865,17 @@ def _interactive() -> None:
 
 
 def main() -> None:
-    try:
-        _interactive()
-    except (EOFError, KeyboardInterrupt):
-        print()
-        print(Ansi.info("已中断"))
+    """默认启动网页工作台；加 ``--console`` 使用归档的文本控制台。"""
+    argv = sys.argv[1:]
+    if "--console" in argv:
+        try:
+            _interactive()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            print(Ansi.info("已中断"))
+        return
+    from .webui.server import main as web_main
+    raise SystemExit(web_main([item for item in argv if item != "--console"]))
 
 
 if __name__ == "__main__":

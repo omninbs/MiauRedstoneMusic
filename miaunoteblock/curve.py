@@ -1,4 +1,4 @@
-"""曲线音量排版（curve）：严格 ABAB 轨道 + 左右叠加音量。
+"""音量控制排版（curve）：严格 ABAB 轨道 + 左右叠加音量。
 
 轨道规律（与参考结构 linear/volum/volum2 一致）
 ------------------------------------------------
@@ -17,20 +17,26 @@
 
 音量模型
 --------
-- 普通音轨：每个虚拟层左右各一条 ABAB 轨道，每盒承担 V/2，
-  ``d = 48 × (1 − V/2)``（V=100% → 24 格，V=0 → 48 格），左右叠加还原 NBS 力度。
-- 主音轨（用户多选）：无视 NBS 力度，固定满音量，放在中心轴走廊上方/下方，
-  上下数量尽量均匀。
-- 所有方块下方垫白色羊毛作为支撑。
+- 以走廊中心为听者位置 ``eye_y = base_y + corridor / 2``；
+- 每条轨道的垂直偏移 ``vertical = (y + 0.5) - eye_y`` 也计入距离，
+  横向距离由勾股定理反解：``lateral = sqrt(target² - vertical²)``，
+  其中 ``target = 48 × (1 − V/2)``；
+- 若垂直差已经超过目标距离（高音量 + 高轨道），横向取最小值并记录「不可达」警告；
+- 普通音轨左右各一条 ABAB 轨道，每盒承担 V/2，左右叠加还原 NBS 力度；
+- 主音轨（用户多选）：无视 NBS 力度，固定满音量，放在走廊外上方/下方；
+- 所有轨道使用互不相同的 Y 层（间距 ≥ 2 格），保证音符盒上方不会被其它
+  轨道占用，红石粉也落在不同层、不会串线。
 """
 
 import json
+import math
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 
-from .constants import FALLING_BLOCK_SUPPORT, INSTRUMENT_BLOCK_MAP
+from .constants import INSTRUMENT_BLOCK_MAP
 from .generation import get_note_key, note_to_pitch
 from .volume import (
+    LISTENER_EYE,
     clamp,
     dual_distance,
     layer_volume,
@@ -53,32 +59,36 @@ MAX_DISTANCE = 48.0
 
 
 class BlockWriter:
-    """坐标 → 方块串，后写覆盖先写，并记录冲突（用于自检）。"""
+    """坐标 → 方块串，后写覆盖先写，并记录冲突与方块所属轨道（用于自检）。"""
 
     def __init__(self) -> None:
         self.blocks: Dict[Tuple[int, int, int], str] = {}
+        self.owners: Dict[Tuple[int, int, int], str] = {}
         self.conflicts: List[Tuple[Tuple[int, int, int], str, str]] = []
 
-    def set(self, position: Tuple[int, int, int], block: str) -> None:
+    def set(self, position: Tuple[int, int, int], block: str,
+            owner: Optional[str] = None) -> None:
         old = self.blocks.get(position)
         if old is not None and old != block:
             self.conflicts.append((position, old, block))
         self.blocks[position] = block
+        if owner is not None:
+            self.owners[position] = owner
 
     def commands(self) -> List[str]:
-        commands = ["# 红石音乐生成器（曲线音量排版 + 隐形矿车跟随）"]
+        commands = ["# 红石音乐生成器（音量控制排版 + 隐形矿车跟随）"]
         for position in sorted(self.blocks):
             x, y, z = position
             commands.append(f"setblock {x} {y} {z} {self.blocks[position]}")
         return commands
 
 
-def _instrument_blocks(instrument: int) -> List[str]:
+def _instrument_blocks(instrument: int, support: str = WOOL) -> List[str]:
     if instrument == 0:
         return []
     blocks = [INSTRUMENT_BLOCK_MAP.get(instrument, "minecraft:stone")]
     if instrument == 3:
-        blocks.append(FALLING_BLOCK_SUPPORT)
+        blocks.append(support)
     return blocks
 
 
@@ -130,19 +140,39 @@ def _smooth(distances: List[int], low: float, high: float) -> Tuple[List[int], i
 
 def _target_sequence(entries_by_tick: Dict[int, List[dict]], ticks: int,
                      low: float, high: float, vertical: float,
-                     sound_range: float, master: bool) -> Tuple[List[int], int]:
-    """每个 tick 的横向距离：有音符取最响，空白 tick 线性插值。"""
+                     sound_range: float, master: bool) -> Tuple[List[int], int, int, int]:
+    """每个 tick 的横向距离。
+
+    目标音量 → 目标三维距离 → 用勾股定理扣掉垂直分量得到横向距离：
+    ``lateral = sqrt(target² − vertical²)``。垂直差本身已经是距离的一部分，
+    因此高音轨不会再被「少算一段高度」而放得离走廊更近。
+
+    返回 ``(distances, smoothed, unreachable, deviations)``：
+    - smoothed：因红石线 15 格限制被平滑的 tick 数；
+    - unreachable：垂直差已超过目标距离，满音量在几何上不可达的 tick 数；
+    - deviations：平滑后实际音量与 NBS 目标偏差超过 6% 的 tick 数。
+    """
+    reach_floor = math.hypot(low, vertical) if low else 0.0
     desired: Dict[int, float] = {}
+    wanted_volume: Dict[int, float] = {}
+    unreachable = 0
     for tick in range(ticks):
         entries = entries_by_tick.get(tick, [])
         if not entries:
             continue
         if master:
             desired[tick] = 0.0
+            wanted_volume[tick] = 1.0
+            continue
+        loudest = max(entry["volume"] for entry in entries)
+        target = dual_distance(loudest, sound_range)
+        if target < reach_floor - 0.5:
+            # 垂直差已经超过双盒目标距离：横向即使贴到最小也还原不了这个音量
+            unreachable += 1
+            desired[tick] = float(low)
         else:
-            loudest = max(entry["volume"] for entry in entries)
-            desired[tick] = lateral_from_3d(
-                dual_distance(loudest, sound_range), vertical)
+            desired[tick] = lateral_from_3d(target, vertical)
+        wanted_volume[tick] = loudest
     raw: List[int] = []
     previous: Optional[float] = None
     previous_index: Optional[int] = None
@@ -165,7 +195,49 @@ def _target_sequence(entries_by_tick: Dict[int, List[dict]], ticks: int,
         raw.append(int(round(clamp(value, low, high))))
         previous = raw[-1]
         previous_index = index
-    return _smooth(raw, low, high)
+    distances, smoothed = _smooth(raw, low, high)
+    if master:
+        return distances, smoothed, unreachable, 0
+    deviations = 0
+    for tick, want in wanted_volume.items():
+        actual = volume_from_distance(
+            math.hypot(distances[tick], vertical), sound_range)
+        # 每盒只承担 V/2，左右两盒叠加才等于 NBS 目标
+        if abs(actual - want / 2.0) > 0.06:
+            deviations += 1
+    return distances, smoothed, unreachable, deviations
+
+
+def _deltas(max_abs: int) -> List[int]:
+    """0, +1, -1, +2, -2 … 由近到远。"""
+    values = [0]
+    for step in range(1, max_abs + 1):
+        values.append(step)
+        values.append(-step)
+    return values
+
+
+def _pick_lane_level(desired: int, limit: float, eye: float,
+                     used: set, gap: int) -> int:
+    """在期望高度附近找一个可用的轨道层。
+
+    ``gap`` 至少 3：上一层在 y+3 时，它的支撑方块落在 y+2，
+    不会挡住 y 层音符盒的正上方；同时不同层红石粉也不会相邻串线。
+    ``limit`` 是该音轨可用的最大垂直偏移（由基准音量决定）：
+    先在这个范围内尽量贴近期望角度，找不到才放宽到任意空层，
+    保证不同音轨永远不会落在同一层。
+    """
+    for delta in _deltas(24):
+        candidate = desired + delta
+        if abs(candidate + 0.5 - eye) > limit + 1e-6:
+            continue
+        if all(abs(candidate - other) >= gap for other in used):
+            return candidate
+    for delta in _deltas(400):
+        candidate = desired + delta
+        if all(abs(candidate - other) >= gap for other in used):
+            return candidate
+    return desired
 
 
 def plan_curve(virtual_layers: List[dict], layer_to_group: Dict[int, int],
@@ -179,6 +251,7 @@ def plan_curve(virtual_layers: List[dict], layer_to_group: Dict[int, int],
     master_ids = set(config.get("curve_master_layers") or [])
     base_x, base_y, base_z = base
     player_y = base_y
+    eye_y = base_y + LISTENER_EYE  # 聆听位置：站在走廊里时的耳朵高度
     ticks = max_tick + 1
 
     master_layers: List[dict] = []
@@ -193,9 +266,12 @@ def plan_curve(virtual_layers: List[dict], layer_to_group: Dict[int, int],
     lanes: Dict[Tuple, List[dict]] = {}
     placed: List[dict] = []
     smoothed = 0
+    unreachable = 0
+    deviations = 0
     dropped_total = 0
+    used_y: set = set()
 
-    # ── 主音轨：中心轴走廊上下，固定满音量 ─────────────────
+    # ── 主音轨：走廊外最近的上下层，固定满音量 ─────────────
     up = down = 0
     for index, virtual in enumerate(master_layers):
         if index % 2 == 0:
@@ -204,13 +280,18 @@ def plan_curve(virtual_layers: List[dict], layer_to_group: Dict[int, int],
         else:
             y = base_y - corridor - 1 - down * master_spacing
             down += 1
+        while y in used_y:
+            y += master_spacing if index % 2 == 0 else -master_spacing
+        used_y.add(y)
         original_id = virtual.get("original_id", virtual["vid"])
         entries_by_tick, dropped = _unique_notes(virtual["notes"], max_tick, song, original_id)
         dropped_total += dropped
-        distances, count = _target_sequence(
-            entries_by_tick, ticks, 0.0, 0.0, abs(y + 0.5 - player_y),
-            sound_range, master=True)
+        vertical = abs(y + 0.5 - eye_y)
+        distances, count, miss, spread = _target_sequence(
+            entries_by_tick, ticks, 0.0, 0.0, vertical, sound_range, master=True)
         smoothed += count
+        unreachable += miss
+        deviations += spread
         nodes = []
         for tick in range(ticks):
             x = base_x + STEP * tick
@@ -219,7 +300,7 @@ def plan_curve(virtual_layers: List[dict], layer_to_group: Dict[int, int],
             node = {
                 "tick": tick, "x": x, "z": z, "y": y, "side": 0,
                 "entries": entries, "master": True,
-                "distance": ((z - base_z) ** 2 + (y + 0.5 - player_y) ** 2) ** 0.5,
+                "distance": math.hypot(z - base_z, vertical),
             }
             nodes.append(node)
             for entry in entries:
@@ -233,18 +314,51 @@ def plan_curve(virtual_layers: List[dict], layer_to_group: Dict[int, int],
                 })
         lanes[("master", virtual["vid"])] = nodes
 
-    # ── 普通音轨：每个虚拟层左右各一条 ABAB 轨道 ───────────
-    total_layers = max(1, len(normal_layers))
-    for index, virtual in enumerate(normal_layers):
+    # ── 普通音轨：基准音量 → 半径 R，再沿圆周分配角度 ───────
+    # 每条音轨固定一个高度层（红石粉不能上下走线）。该层与走廊中心的
+    # 垂直差 vertical 就是圆上的仰角分量，横向半径由勾股反解：
+    #     z = sqrt(R² − vertical²)
+    # 不同音轨按角度均匀铺开，形成围绕走廊的立体圆环；左右两侧对称。
+    prepared = []
+    for virtual in normal_layers:
         original_id = virtual.get("original_id", virtual["vid"])
-        y = base_y + spacing * (index - (total_layers - 1) // 2)
-        vertical = abs(y + 0.5 - player_y)
         entries_by_tick, dropped = _unique_notes(virtual["notes"], max_tick, song, original_id)
         dropped_total += dropped
-        distances, count = _target_sequence(
+        volumes = [entry["volume"] for items in entries_by_tick.values() for entry in items]
+        loudest = max(volumes) if volumes else 0.0
+        # 基准半径：该音轨最响音符所需的三维距离
+        base_distance = dual_distance(loudest, sound_range) if volumes else MAX_DISTANCE
+        prepared.append({
+            "virtual": virtual,
+            "entries": entries_by_tick,
+            "radius": base_distance,
+        })
+
+    # 角度在 [-70°, +70°] 内均匀铺开，再按各轨道的可用角度调整：
+    # 音量越大半径越小，可用仰角也越小（横向必须留够 24 格）。
+    count = max(1, len(prepared))
+    angles = [-70.0 + 140.0 * ((index + 0.5) / count) for index in range(count)]
+    angles.sort(key=abs)
+    prepared.sort(key=lambda item: item["radius"], reverse=True)
+
+    for item, angle in zip(prepared, angles):
+        virtual = item["virtual"]
+        entries_by_tick = item["entries"]
+        radius = item["radius"]
+        theta_max = (math.degrees(math.acos(min(1.0, MIN_DUAL_DISTANCE / radius)))
+                     if radius > 0 else 0.0)
+        theta = math.radians(max(-theta_max, min(theta_max, angle)))
+        desired = int(round(eye_y + radius * math.sin(theta)))
+        limit = radius * math.sin(math.radians(theta_max))
+        y = _pick_lane_level(desired, limit, eye_y, used_y, max(3, spacing))
+        used_y.add(y)
+        vertical = abs(y + 0.5 - eye_y)
+        distances, count_smooth, miss, spread = _target_sequence(
             entries_by_tick, ticks, MIN_DUAL_DISTANCE, MAX_DISTANCE,
             vertical, sound_range, master=False)
-        smoothed += count
+        smoothed += count_smooth
+        unreachable += miss
+        deviations += spread
 
         for side in (-1, 1):
             nodes = []
@@ -252,7 +366,7 @@ def plan_curve(virtual_layers: List[dict], layer_to_group: Dict[int, int],
                 x = base_x + STEP * tick
                 distance = distances[tick]
                 z = base_z + side * distance
-                node_distance = (distance ** 2 + vertical ** 2) ** 0.5
+                node_distance = math.hypot(distance, vertical)
                 entries = entries_by_tick.get(tick, [])
                 nodes.append({
                     "tick": tick, "x": x, "z": z, "y": y, "side": side,
@@ -275,15 +389,48 @@ def plan_curve(virtual_layers: List[dict], layer_to_group: Dict[int, int],
         "lanes": lanes,
         "notes": placed,
         "player_y": player_y,
+        "eye_y": eye_y,
+        "lane_levels": sorted(used_y),
         "spacing": spacing,
         "corridor": corridor,
         "master_spacing": master_spacing,
         "sound_range": sound_range,
         "base": base,
         "smoothed": smoothed,
+        "unreachable": unreachable,
+        "deviations": deviations,
         "overflow": smoothed,
         "dropped": dropped_total,
     }
+
+
+def _audit_layout(writer: BlockWriter) -> dict:
+    """检查两类会破坏播放的问题：
+
+    - 音符盒正上方被其它轨道占用（会挡住音符盒 / 让同一格出现两个音符）；
+    - 红石粉与其它轨道的红石粉、中继器或音符盒相邻（会串线误触发）。
+    """
+    overheads = 0
+    crossing = set()
+    neighbors = ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1))
+    for position, block in writer.blocks.items():
+        x, y, z = position
+        if block.startswith("minecraft:note_block"):
+            if (x, y + 1, z) in writer.blocks:
+                overheads += 1
+        if block != DUST:
+            continue
+        owner = writer.owners.get(position)
+        for dx, dy, dz in neighbors:
+            other_pos = (x + dx, y + dy, z + dz)
+            other = writer.owners.get(other_pos)
+            if other is None or other == owner:
+                continue
+            other_block = writer.blocks.get(other_pos, "")
+            if (other_block == DUST or "repeater" in other_block
+                    or other_block.startswith("minecraft:note_block")):
+                crossing.add(tuple(sorted((position, other_pos))))
+    return {"overheads": overheads, "crossing": len(crossing)}
 
 
 def build_curve_commands(virtual_layers: List[dict], layer_to_group: Dict[int, int],
@@ -299,6 +446,8 @@ def build_curve_commands(virtual_layers: List[dict], layer_to_group: Dict[int, i
     base_x, base_y, base_z = base
     player_y = plan["player_y"]
     activations: Dict[str, Tuple[int, int, int]] = {}
+    support = str(config.get("support_block") or WOOL)
+    empty = str(config.get("empty_block") or EMPTY)
 
     for key, nodes in plan["lanes"].items():
         if not nodes:
@@ -310,8 +459,8 @@ def build_curve_commands(virtual_layers: List[dict], layer_to_group: Dict[int, i
             label = f"v{key[1]}{'R' if key[2] > 0 else 'L'}"
         previous_z = nodes[0]["z"]
         # 起手中继器：直接强充能第一个音符盒
-        writer.set((base_x, y, previous_z), _repeater())
-        writer.set((base_x, y - 1, previous_z), WOOL)
+        writer.set((base_x, y, previous_z), _repeater(), label)
+        writer.set((base_x, y - 1, previous_z), support, label)
         activations[label] = (base_x - 1, y, previous_z)
 
         for index, node in enumerate(nodes):
@@ -319,26 +468,27 @@ def build_curve_commands(virtual_layers: List[dict], layer_to_group: Dict[int, i
             z = node["z"]
             # 本 tick 的中继器与音符盒同 Z：中继器输出端正对音符盒 → 强充能
             if index > 0:
-                writer.set((x, y, z), _repeater())
-                writer.set((x, y - 1, z), WOOL)
+                writer.set((x, y, z), _repeater(), label)
+                writer.set((x, y - 1, z), support, label)
                 # 横向移动：红石线只负责把「上一个被强充能的音符盒/空音符」
                 # 的信号送进本中继器的背面（正对中继器输入端），
                 # 不依赖红石粉侧向充能任何方块。
                 if z != previous_z:
                     step = 1 if z > previous_z else -1
                     for wire_z in range(previous_z + step, z + step, step):
-                        writer.set((x - 1, y, wire_z), DUST)
-                        writer.set((x - 1, y - 1, wire_z), WOOL)
+                        writer.set((x - 1, y, wire_z), DUST, label)
+                        writer.set((x - 1, y - 1, wire_z), support, label)
             entries = node["entries"]
             if entries:
                 note = entries[0]["note"]
                 writer.set((x + 1, y, z),
-                           f"minecraft:note_block[note={note_to_pitch(get_note_key(note))}]")
-                for depth, block in enumerate(_instrument_blocks(note.instrument), start=1):
-                    writer.set((x + 1, y - depth, z), block)
+                           f"minecraft:note_block[note={note_to_pitch(get_note_key(note))}]",
+                           label)
+                for depth, block in enumerate(_instrument_blocks(note.instrument, support), start=1):
+                    writer.set((x + 1, y - depth, z), block, label)
             else:
-                writer.set((x + 1, y, z), EMPTY)
-                writer.set((x + 1, y - 1, z), WOOL)
+                writer.set((x + 1, y, z), empty, label)
+                writer.set((x + 1, y - 1, z), support, label)
             previous_z = z
 
     meta = {
@@ -355,7 +505,7 @@ def build_curve_commands(virtual_layers: List[dict], layer_to_group: Dict[int, i
         cart_z = base_z + int(max_distance) + 3
 
         writer.set((base_x, player_y, cart_z), _repeater())
-        writer.set((base_x, player_y - 1, cart_z), WOOL)
+        writer.set((base_x, player_y - 1, cart_z), support)
         for index, node in enumerate(any_nodes):
             command_x = base_x + STEP * index + 1
             command = (f"tp @e[type=minecart,tag={MINECART_TAG},limit=1] "
@@ -363,9 +513,9 @@ def build_curve_commands(virtual_layers: List[dict], layer_to_group: Dict[int, i
             writer.set((command_x, player_y, cart_z),
                        f"minecraft:command_block[facing=up]"
                        f"{{Command:{json.dumps(command)}}}")
-            writer.set((command_x, player_y - 1, cart_z), WOOL)
+            writer.set((command_x, player_y - 1, cart_z), support)
             writer.set((command_x + 1, player_y, cart_z), _repeater())
-            writer.set((command_x + 1, player_y - 1, cart_z), WOOL)
+            writer.set((command_x + 1, player_y - 1, cart_z), support)
 
         summon = (f"summon minecart ~0.5 ~-1 ~{base_z + 0.5 - cart_z:.1f} "
                   f"{{Invisible:1b,Silent:1b,NoGravity:1b,Tags:[\"{MINECART_TAG}\"]}}")
@@ -380,6 +530,9 @@ def build_curve_commands(virtual_layers: List[dict], layer_to_group: Dict[int, i
         meta["minecart"] = {"z": cart_z, "summon": summon, "ride": ride}
 
     commands = writer.commands()
+    audit = _audit_layout(writer)
     meta["conflicts"] = writer.conflicts
+    meta["note_overheads"] = audit["overheads"]
+    meta["crossing"] = audit["crossing"]
     meta["block_count"] = len(writer.blocks)
     return commands, activations, meta

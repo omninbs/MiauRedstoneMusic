@@ -27,7 +27,7 @@ from typing import Dict, List, Optional, Tuple
 
 from .constants import INSTRUMENT_BLOCK_MAP
 from .generation import note_to_pitch
-from .volume import distance_3d, volume_from_distance
+from .volume import LISTENER_EYE, distance_3d, volume_from_distance
 
 Coord = Tuple[int, int, int]
 
@@ -559,8 +559,9 @@ def compare(plan: dict, simulation: dict, sound_range: float = 48.0,
         volume = None
         side = 0
         if listener is not None:
+            # 听者在耳朵高度，而不是脚底
             distance = distance_3d(center[0], center[1], center[2],
-                                   listener[0], listener[1], listener[2])
+                                   listener[0], listener[1] + LISTENER_EYE, listener[2])
             volume = volume_from_distance(distance, sound_range)
             side = 1 if center[2] > listener[2] else (-1 if center[2] < listener[2] else 0)
         events.append({
