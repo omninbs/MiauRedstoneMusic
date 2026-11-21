@@ -97,11 +97,40 @@ def auto_group_by_mode_on_layers(layers_info: List[Dict], mode: int) -> Dict[int
     """
     对虚拟层列表进行自动分组
     layers_info: 列表元素为 {'vid': int, 'original_id': int, 'side': str, 'inst': int, 'cat': str}
-    mode: 1=同乐器优先  2=最大化合并  3=顺序系统音色合并
+    mode: 1=同乐器优先  2=最大化合并  3=顺序系统音色合并  4=按平均音量
     返回 {vid: group_id}
     """
     layer_to_group = {}
     group_id = 0
+
+    if mode == 4:
+        def average_volume(layer: Dict) -> float:
+            notes = layer.get('notes') or []
+            if not notes:
+                return 0.0
+            total = 0.0
+            for note in notes:
+                try:
+                    total += float(getattr(note, 'velocity', 100) or 0)
+                except (TypeError, ValueError):
+                    total += 100.0
+            return total / len(notes)
+
+        ordered = sorted(layers_info, key=lambda x: (average_volume(x), x['vid']))
+        i = 0
+        while i < len(ordered):
+            base = average_volume(ordered[i])
+            group = [ordered[i]['vid']]
+            j = i + 1
+            while (j < len(ordered) and len(group) < 3
+                   and abs(average_volume(ordered[j]) - base) <= 10):
+                group.append(ordered[j]['vid'])
+                j += 1
+            for vid in group:
+                layer_to_group[vid] = group_id
+            group_id += 1
+            i = j
+        return layer_to_group
 
     if mode == 3:
         # 顺序系统音色合并：严格按音轨原有顺序（从上到下），

@@ -173,9 +173,10 @@ def edit_groups_interactive_virtual(virtual_layers: List[dict], song) -> Dict[in
             print("    [1] 同乐器优先")
             print("    [2] 最大化合并")
             print("    [3] 顺序同音色合并（相邻同音色才合并，每组最多 3 条）")
+            print("    [4] 按平均音量合并（音量接近的轨道归为一组，每组最多 3 条）")
             mode = input(Ansi.prompt("模式 (回车=1): ")).strip() or "1"
             layer_to_group = auto_group_by_mode_on_layers(
-                virtual_layers, int(mode) if mode in ('1', '2', '3') else 1)
+                virtual_layers, int(mode) if mode in ('1', '2', '3', '4') else 1)
             print(Ansi.success(f"自动分组完成，共 {len(set(layer_to_group.values()))} 组"))
             return layer_to_group
         tokens = raw.split()
@@ -612,6 +613,10 @@ def build_commands(config: dict, song, virtual_layers: List[dict],
             print(Ansi.prompt(
                 f"警告：有 {plan['unreachable']} 个音符因轨道离走廊太远，"
                 f"满音量在几何上无法还原，已放到可达的最近位置。"))
+        if plan.get("multi_cells"):
+            print(Ansi.info(
+                f"提示：{plan['multi_cells']} 个 tick 在同一轨道同时触发多个音符盒，"
+                f"它们共用同一半径，音量以最响音符为准。"))
         if plan.get("deviations"):
             print(Ansi.prompt(
                 f"警告：有 {plan['deviations']} 个 tick 的实际音量与 NBS 目标偏差超过 6%"

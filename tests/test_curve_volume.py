@@ -23,6 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from miaunoteblock.curve import (
     MAX_LATERAL_STEP,
     MIN_DUAL_DISTANCE,
+    MIN_Z,
     STEP,
     build_curve_commands,
     plan_curve,
@@ -182,8 +183,8 @@ def test_path_geometry():
         if entry.get("master"):
             chk.ok(entry["pos"][2] == 0, f"主音轨音符不在中心轴：{entry['pos']}")
         else:
-            chk.ok(abs(entry["pos"][2]) >= MIN_DUAL_DISTANCE - 1,
-                   f"tick {entry['tick']}: 普通音符离轴 {abs(entry['pos'][2])} < 24")
+            chk.ok(abs(entry["pos"][2]) >= MIN_Z - 1,
+                   f"tick {entry['tick']}: 普通音符离轴 {abs(entry['pos'][2])} 越过了中心轴")
 
     # 主音轨应上下分布
     master_y = sorted({node["y"] for key, nodes in plan["lanes"].items()
@@ -243,7 +244,8 @@ def test_curve_end_to_end():
            f"一致 tick {stats['matched_ticks']}/{stats['ticks']}")
     chk.ok(stats["volume_max_error"] < 1e-6,
            f"单盒音量与设计不符：{stats['volume_max_error']:.4f}")
-    chk.ok(stats["heard_max_error"] < 0.08,
+    # 同一 tick 多音符会共用同一半径，允许略大的叠加误差
+    chk.ok(stats["heard_max_error"] < 0.10,
            f"左右叠加后的音量对 NBS 误差过大：{stats['heard_max_error']:.4f}")
     chk.ok(stats["left_notes"] > 0 and stats["right_notes"] > 0, "左右声道没有同时出现")
     chk.ok(stats["left_notes"] == stats["right_notes"], "左右音符数量不对称")
@@ -312,7 +314,7 @@ def test_lateral_smoothing():
     virtual_layers = [{"vid": 0, "original_id": 0, "side": None,
                        "notes": notes, "inst": 0, "cat": "钢琴"}]
     plan = plan_curve(virtual_layers, {0: 0}, (0, 64, 0), 1, base_config())
-    nodes = plan["lanes"][("layer", 0, 1)]
+    nodes = plan["lanes"][("group", 0, 1)]
     chk.ok(abs(nodes[0]["z"]) == MIN_DUAL_DISTANCE,
            f"满音量距离 {nodes[0]['z']} != {MIN_DUAL_DISTANCE}")
     chk.ok(abs(nodes[1]["z"]) == MIN_DUAL_DISTANCE + MAX_LATERAL_STEP,

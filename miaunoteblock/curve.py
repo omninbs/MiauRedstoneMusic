@@ -54,8 +54,39 @@ MINECART_TAG = "miau_cart"
 STEP = 2                           # 每个歌曲 tick 沿 +X 前进 2 格（R + B）
 MAX_LATERAL_STEP = 15              # 红石线单段上限（16 格 - 音符盒本身）
 WARN_LATERAL = 16                  # 超过它提示音量变化 >66.7%
+MIN_Z = 1.0                        # 左右两条轨道至少要离中心轴 1 格，避免互相重合
+MIN_RADIUS = 24.0                  # 单盒到走廊的最小直线距离（满音量）
+MAX_NOTES_PER_CELL = 3             # 同一 tick 同一轨道最多 3 个音符盒（中间 + 两侧）
 MIN_DUAL_DISTANCE = 24.0           # 左右叠加满音量时的单盒距离
 MAX_DISTANCE = 48.0
+
+
+def _cell_offsets(entries: List[dict], tick: int, movement: int = 0) -> List[Tuple[int, dict]]:
+    """同一 tick 多个音符时，返回 (偏移, 音符) 列表。
+
+    偏移以「离中心轴的方向」为单位：0 = 轨道原位，+1 = 向外，-1 = 向内。
+    中继器正对的中间音符盒会被**强充能**，它再弱充能相邻的音符盒，
+    所以最多 3 个：中间 + 内外两侧。侧边必须放在**下一 tick 不移动的一侧**，
+    否则下一 tick 的横向红石线会扫过并覆盖这个音符盒。
+    movement: +1 = 半径变大（向外走），-1 = 半径变小（向内走）。
+    """
+    if not entries:
+        return []
+    ordered = sorted(entries, key=lambda entry: entry["volume"], reverse=True)
+    if len(ordered) == 1:
+        return [(0, ordered[0])]
+    if movement > 0:
+        side = -1
+    elif movement < 0:
+        side = 1
+    else:
+        side = 1 if tick % 2 == 0 else -1
+    if len(ordered) == 2:
+        return [(0, ordered[0]), (side, ordered[1])]
+    if movement == 0:
+        return [(0, ordered[0]), (-1, ordered[1]), (1, ordered[2])]
+    # 会移动时只能保留反向一侧，第三个音符放不下
+    return [(0, ordered[0]), (side, ordered[1])]
 
 
 class BlockWriter:
@@ -269,6 +300,7 @@ def plan_curve(virtual_layers: List[dict], layer_to_group: Dict[int, int],
     unreachable = 0
     deviations = 0
     dropped_total = 0
+    multi_cells = 0
     used_y: set = set()
 
     # ── 主音轨：走廊外最近的上下层，固定满音量 ─────────────
@@ -314,38 +346,61 @@ def plan_curve(virtual_layers: List[dict], layer_to_group: Dict[int, int],
                 })
         lanes[("master", virtual["vid"])] = nodes
 
-    # ── 普通音轨：基准音量 → 半径 R，再沿圆周分配角度 ───────
-    # 每条音轨固定一个高度层（红石粉不能上下走线）。该层与走廊中心的
-    # 垂直差 vertical 就是圆上的仰角分量，横向半径由勾股反解：
-    #     z = sqrt(R² − vertical²)
-    # 不同音轨按角度均匀铺开，形成围绕走廊的立体圆环；左右两侧对称。
-    prepared = []
+    # ── 普通音轨：按分组合并成一条轨道，沿圆周分配角度 ───────
+    # 同组音轨共用一条红石轨道；同一 tick 的多个音符盒并排摆放，
+    # 由中继器强充能中间音符盒、再弱充能带动两侧音符盒。
+    group_members: Dict[int, List[dict]] = defaultdict(list)
     for virtual in normal_layers:
-        original_id = virtual.get("original_id", virtual["vid"])
-        entries_by_tick, dropped = _unique_notes(virtual["notes"], max_tick, song, original_id)
-        dropped_total += dropped
-        volumes = [entry["volume"] for items in entries_by_tick.values() for entry in items]
-        loudest = max(volumes) if volumes else 0.0
-        # 基准半径：该音轨最响音符所需的三维距离
-        base_distance = dual_distance(loudest, sound_range) if volumes else MAX_DISTANCE
+        gid = layer_to_group.get(virtual["vid"], virtual["vid"])
+        group_members[gid].append(virtual)
+
+    prepared = []
+    for gid in sorted(group_members):
+        merged: Dict[int, List[dict]] = defaultdict(list)
+        for virtual in group_members[gid]:
+            original_id = virtual.get("original_id", virtual["vid"])
+            entries_by_tick, dropped = _unique_notes(
+                virtual["notes"], max_tick, song, original_id)
+            dropped_total += dropped
+            for tick, items in entries_by_tick.items():
+                for entry in items:
+                    merged[tick].append({
+                        "note": entry["note"],
+                        "volume": entry["volume"],
+                        "vid": virtual["vid"],
+                    })
+        for tick, items in list(merged.items()):
+            if len(items) > MAX_NOTES_PER_CELL:
+                items.sort(key=lambda entry: entry["volume"], reverse=True)
+                dropped_total += len(items) - MAX_NOTES_PER_CELL
+                merged[tick] = items[:MAX_NOTES_PER_CELL]
+            else:
+                items.sort(key=lambda entry: entry["volume"], reverse=True)
+        volumes = [entry["volume"] for items in merged.values() for entry in items]
+        if volumes:
+            volumes_sorted = sorted(volumes)
+            representative = volumes_sorted[len(volumes_sorted) // 2]
+            radius = dual_distance(representative, sound_range)
+        else:
+            radius = MAX_DISTANCE
         prepared.append({
-            "virtual": virtual,
-            "entries": entries_by_tick,
-            "radius": base_distance,
+            "gid": gid,
+            "vids": [virtual["vid"] for virtual in group_members[gid]],
+            "entries": merged,
+            "radius": radius,
         })
 
-    # 角度在 [-70°, +70°] 内均匀铺开，再按各轨道的可用角度调整：
-    # 音量越大半径越小，可用仰角也越小（横向必须留够 24 格）。
+    # 角度在 [-88°, +88°] 内均匀铺开；音量越大半径越小，可用仰角也越小
     count = max(1, len(prepared))
-    angles = [-70.0 + 140.0 * ((index + 0.5) / count) for index in range(count)]
+    angles = [-88.0 + 176.0 * ((index + 0.5) / count) for index in range(count)]
     angles.sort(key=abs)
     prepared.sort(key=lambda item: item["radius"], reverse=True)
 
     for item, angle in zip(prepared, angles):
-        virtual = item["virtual"]
+        gid = item["gid"]
         entries_by_tick = item["entries"]
         radius = item["radius"]
-        theta_max = (math.degrees(math.acos(min(1.0, MIN_DUAL_DISTANCE / radius)))
+        theta_max = (math.degrees(math.acos(min(1.0, MIN_Z / radius)))
                      if radius > 0 else 0.0)
         theta = math.radians(max(-theta_max, min(theta_max, angle)))
         desired = int(round(eye_y + radius * math.sin(theta)))
@@ -353,8 +408,10 @@ def plan_curve(virtual_layers: List[dict], layer_to_group: Dict[int, int],
         y = _pick_lane_level(desired, limit, eye_y, used_y, max(3, spacing))
         used_y.add(y)
         vertical = abs(y + 0.5 - eye_y)
+        # 横向下限由「直线距离 ≥ 24」反解，而不是固定横向距离
+        low = max(MIN_Z, math.sqrt(max(MIN_RADIUS ** 2 - vertical ** 2, 0.0)))
         distances, count_smooth, miss, spread = _target_sequence(
-            entries_by_tick, ticks, MIN_DUAL_DISTANCE, MAX_DISTANCE,
+            entries_by_tick, ticks, low, MAX_DISTANCE,
             vertical, sound_range, master=False)
         smoothed += count_smooth
         unreachable += miss
@@ -373,17 +430,29 @@ def plan_curve(virtual_layers: List[dict], layer_to_group: Dict[int, int],
                     "entries": entries, "master": False,
                     "distance": node_distance,
                 })
-                for entry in entries:
+                next_distance = distances[tick + 1] if tick + 1 < ticks else distance
+                movement = 1 if next_distance > distance else (
+                    -1 if next_distance < distance else 0)
+                offsets = _cell_offsets(entries, tick, movement)
+                if len(entries) >= 2 and side > 0:
+                    multi_cells += 1
+                if len(entries) > len(offsets):
+                    dropped_total += len(entries) - len(offsets)
+                for offset, entry in offsets:
+                    # 侧边音符盒沿半径方向偏移，距离按它自己的位置重新算
+                    note_distance = int(max(MIN_Z, distance + offset))
+                    note_distance_3d = math.hypot(vertical, note_distance)
                     placed.append({
-                        "gid": layer_to_group.get(virtual["vid"]),
-                        "vid": virtual["vid"], "tick": tick,
+                        "gid": gid,
+                        "vid": entry["vid"], "tick": tick,
                         "note": entry["note"], "side": side,
-                        "distance": node_distance, "primary": True,
+                        "distance": note_distance_3d,
+                        "primary": offset == 0,
                         "volume_nbs": entry["volume"],
-                        "volume_plan": volume_from_distance(node_distance, sound_range),
-                        "pos": (x + 1, y, z), "master": False,
+                        "volume_plan": volume_from_distance(note_distance_3d, sound_range),
+                        "pos": (x + 1, y, base_z + side * note_distance), "master": False,
                     })
-            lanes[("layer", virtual["vid"], side)] = nodes
+            lanes[("group", gid, side)] = nodes
 
     return {
         "lanes": lanes,
@@ -399,6 +468,7 @@ def plan_curve(virtual_layers: List[dict], layer_to_group: Dict[int, int],
         "smoothed": smoothed,
         "unreachable": unreachable,
         "deviations": deviations,
+        "multi_cells": multi_cells,
         "overflow": smoothed,
         "dropped": dropped_total,
     }
@@ -453,6 +523,7 @@ def build_curve_commands(virtual_layers: List[dict], layer_to_group: Dict[int, i
         if not nodes:
             continue
         y = nodes[0]["y"]
+        lane_side = nodes[0].get("side", 0)
         if key[0] == "master":
             label = f"m{key[1]}"
         else:
@@ -479,13 +550,21 @@ def build_curve_commands(virtual_layers: List[dict], layer_to_group: Dict[int, i
                         writer.set((x - 1, y, wire_z), DUST, label)
                         writer.set((x - 1, y - 1, wire_z), support, label)
             entries = node["entries"]
+            next_z = nodes[index + 1]["z"] if index + 1 < len(nodes) else z
+            delta_units = (next_z - z) * lane_side
+            movement = 1 if delta_units > 0 else (-1 if delta_units < 0 else 0)
             if entries:
-                note = entries[0]["note"]
-                writer.set((x + 1, y, z),
-                           f"minecraft:note_block[note={note_to_pitch(get_note_key(note))}]",
-                           label)
-                for depth, block in enumerate(_instrument_blocks(note.instrument, support), start=1):
-                    writer.set((x + 1, y - depth, z), block, label)
+                lane_distance = abs(z - base_z)
+                for offset, entry in _cell_offsets(entries, node["tick"], movement):
+                    note = entry["note"]
+                    note_distance = int(max(MIN_Z, lane_distance + offset))
+                    note_z = base_z + lane_side * note_distance
+                    writer.set((x + 1, y, note_z),
+                               f"minecraft:note_block[note={note_to_pitch(get_note_key(note))}]",
+                               label)
+                    bases = _instrument_blocks(note.instrument, support)
+                    for depth, block in enumerate(bases, start=1):
+                        writer.set((x + 1, y - depth, note_z), block, label)
             else:
                 writer.set((x + 1, y, z), empty, label)
                 writer.set((x + 1, y - 1, z), support, label)

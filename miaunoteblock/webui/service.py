@@ -400,7 +400,7 @@ class Session:
 
     def auto_group(self, mode: int = 1) -> dict:
         self.require_song()
-        mode = max(1, min(3, int(mode)))
+        mode = max(1, min(4, int(mode)))
         mapping = auto_group_by_mode_on_layers(self.virtual_layers, mode)
         with self.lock:
             self.layer_to_group = mapping
@@ -633,6 +633,11 @@ class Session:
             warnings.append(
                 f"有 {plan['unreachable']} 个音符因轨道离走廊太远，"
                 f"满音量在几何上无法还原，已放到可达的最近位置。")
+        if plan.get("multi_cells"):
+            warnings.append(
+                f"有 {plan['multi_cells']} 个 tick 在同一轨道同时触发多个音符盒"
+                f"（由中间音符盒强充能、弱充能带动两侧），它们共用同一半径，"
+                f"音量以最响音符为准。")
         if plan.get("deviations"):
             warnings.append(
                 f"有 {plan['deviations']} 个 tick 的实际音量与 NBS 目标偏差超过 6%"
