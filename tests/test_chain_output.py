@@ -1003,7 +1003,12 @@ def test_full_structure():
         chk.ok("minecraft:chain_command_block" in blocks.get(coord, ""),
                f"后续环应为链式命令方块: {blocks.get(coord, '')[:70]}")
 
-    # 清除用的红石块与放置用的一一对应
+    # 结构不自带红石块；提供「启动 / 清除」两个按钮，清除命令与放置命令成对
+    auto_start = [coord for coord, block in blocks.items()
+                  if block == "minecraft:redstone_block"]
+    chk.ok(not auto_start, f"不应默认放置红石块: {auto_start[:3]}")
+    buttons = [coord for coord, block in blocks.items() if "stone_button" in block]
+    chk.ok(len(buttons) == 2, f"启动/清除按钮数量 {len(buttons)} != 2")
     clear_targets = [text for text in command_texts
                      if text.startswith("setblock ") and text.endswith("minecraft:air")]
     chk.ok(len(clear_targets) == len(place_targets),

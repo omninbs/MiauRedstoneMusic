@@ -1,326 +1,390 @@
 <div align="center">
 
-<img src="https://raw.githubusercontent.com/omninbs/MiauRedstoneMusic/main/assets/miauredstonemusic-logo.svg" alt="MiauRedstoneMusic logo" width="160" />
+<img src="https://raw.githubusercontent.com/omninbs/MiauRedstoneMusic/main/assets/miauredstonemusic-logo.svg" alt="MiauRedstoneMusic Logo" width="160" />
 
 <h1>MiauRedstoneMusic</h1>
 
-<p><b>Turn NBS songs into playable Minecraft redstone music.</b></p>
-<p>Interactive Python generator that converts <code>.nbs</code> files into <code>.schem</code> note-block structures for Minecraft Java 1.21.11.</p>
+<p><b>把 NBS 音乐转换为可运行的 Minecraft 红石音乐。</b></p>
+<p>交互式 Python 生成器，将 <code>.nbs</code> 文件转换为适用于 Minecraft Java 1.21.11 的 <code>.schem</code> 音符盒结构。</p>
 
 <p>
-  <a href="Readme_CN.md"><b>中文文档</b></a>
+  <a href="README.md"><b>English README</b></a>
 </p>
 
 <p>
   <img src="https://img.shields.io/badge/Minecraft%20Java-1.21.11-62B47A?style=for-the-badge&logo=minecraft&logoColor=white" alt="Minecraft Java 1.21.11" />
   <img src="https://img.shields.io/badge/Python-3.x-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.x" />
-  <img src="https://img.shields.io/badge/Output-.schem-7B61FF?style=for-the-badge" alt=".schem output" />
-  <img src="https://img.shields.io/badge/License-Apache%202.0-D22128?style=for-the-badge&logo=apache&logoColor=white" alt="Apache License 2.0" />
-  <img src="https://img.shields.io/badge/Status-Experimental-F2C94C?style=for-the-badge" alt="Experimental status" />
+  <img src="https://img.shields.io/badge/输出-.schem-7B61FF?style=for-the-badge" alt=".schem 输出" />
+  <img src="https://img.shields.io/badge/许可证-Apache%202.0-D22128?style=for-the-badge&logo=apache&logoColor=white" alt="Apache License 2.0" />
+  <img src="https://img.shields.io/badge/状态-实验性-F2C94C?style=for-the-badge" alt="实验性状态" />
 </p>
 
 <p>
-  <img src="https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square" alt="PRs welcome" />
-  <img src="https://img.shields.io/badge/AI--assisted-~70%25-8A63D2?style=flat-square" alt="AI-assisted" />
+  <img src="https://img.shields.io/badge/PR-欢迎-brightgreen?style=flat-square" alt="欢迎 PR" />
+  <img src="https://img.shields.io/badge/AI%20协助-约%2070%25-8A63D2?style=flat-square" alt="AI 协助" />
 </p>
 
 </div>
 
 ---
 
-## Table of Contents
+## 目录
 
-- [Overview](#overview)
-- [At a Glance](#at-a-glance)
-- [Features](#features)
-- [Layouts](#layouts)
-- [Requirements](#requirements)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Lyric Subtitles (per-character)](#lyric-subtitles-mpe-text-chain-per-character)
-- [Project Structure](#project-structure)
-- [Brand Assets](#brand-assets)
-- [Notes and Limitations](#notes-and-limitations)
-- [Contributing](#contributing)
-- [License](#license)
-- [AI-Generated Code Notice](#ai-generated-code-notice)
-- [Acknowledgements](#acknowledgements)
-
----
-
-## Overview
-
-**MiauRedstoneMusic** is an interactive Python utility that reads `.nbs` music files, converts their note and instrument data into Minecraft redstone note-block chains, and saves the result as a `.schem` structure file for Minecraft Java Edition.
-
-It is built around the Minecraft Java **1.21.11** workflow and can optionally generate a synchronized **lyric command-block track** powered by the MiauParticleEffects Fabric mod.
-
-For source songs, the online NBS site [webnbs.com](https://webnbs.com) can be used. This repository does not claim that the online service runs the same conversion pipeline as this local tool.
+- [项目简介](#项目简介)
+- [快速了解](#快速了解)
+- [功能特性](#功能特性)
+- [排版布局](#排版布局)
+- [环境要求](#环境要求)
+- [安装](#安装)
+- [使用方法](#使用方法)
+- [歌词字幕（逐字）](#歌词字幕mpe-text-chain-逐字)
+- [项目结构](#项目结构)
+- [品牌资源](#品牌资源)
+- [注意事项与限制](#注意事项与限制)
+- [参与贡献](#参与贡献)
+- [许可证](#许可证)
+- [AI 生成代码声明](#ai-生成代码声明)
+- [致谢](#致谢)
 
 ---
 
-## At a Glance
+## 项目简介
+
+**MiauRedstoneMusic** 是一个交互式 Python 工具。它读取 `.nbs` 音乐文件，将其中的音符与乐器数据转换为 Minecraft 红石音符盒链，并保存为 `.schem` 结构文件，供 Minecraft Java Edition 使用。
+
+生成器围绕 Minecraft Java **1.21.11** 工作流设计，并可选生成与 **MiauParticleEffects** Fabric 模组同步的**歌词命令方块轨道**。
+
+源歌曲可使用在线 NBS 站点 [webnbs.com](https://webnbs.com)。本仓库不声明该在线服务与本地工具使用相同的转换流程。
+
+---
+
+## 快速了解
 
 | | |
 | :-- | :-- |
-| **Input** | Note Block Studio `.nbs` files |
-| **Output** | `.schem` structure (`mcschematic.Version.JE_1_21`) |
-| **Interface** | Interactive terminal menu |
-| **Target** | Minecraft Java Edition 1.21.11 |
-| **Optional** | Particle lyrics and bouncing-ball effects via MiauParticleEffects |
-| **Config** | Saved per song path under `configs/` in the install directory (one JSON per path); re-opening the same song restores it |
+| **输入** | Note Block Studio `.nbs` 文件 |
+| **输出** | `.schem` 结构（`mcschematic.Version.JE_1_21`） |
+| **交互方式** | 默认打开本地网页工作台（7 步引导 + 3D 预览）；`--console` 可回到归档的终端菜单 |
+| **目标环境** | Minecraft Java Edition 1.21.11 |
+| **可选功能** | 通过 MiauParticleEffects 显示粒子歌词与弹力球特效 |
+| **配置** | 按歌曲文件路径保存到安装目录的 `configs/`（一个路径一个 JSON），再次打开同一首歌自动恢复 |
 
 ---
 
-## Features
+## 功能特性
 
-| Capability | What it gives you |
+| 能力 | 说明 |
 | :-- | :-- |
-| **NBS conversion** | Reads notes and instruments, then emits a playable redstone chain. |
-| **Track grouping** | Merges two or three virtual layers into a single generated group. |
-| **Smart grouping** | Automatic grouping by instrument category, or maximum merging. |
-| **Instrument handling** | Detects instruments and reorders tracks, with percussion placed later. |
-| **Stereo support** | Mono tracks plus selected stereo tracks, duplicated and distributed symmetrically. |
-| **Rich layouts** | Flat, circle, square, semicircle, semisquare, nested-circle, and nested-square. |
-| **Master group** | Choose a core group for non-flat layouts. |
-| **Staircase modes** | Per-group default or descending staircase generation. |
-| **Timing engine** | Repeater and support blocks represent timing gaps and signal paths. |
-| **Repeater modes** | Uniform: one repeater per blank tick, easiest to read. Compact: four blank ticks folded into one `delay=4` repeater, shorter structure (default). Both modes share the same timing; lyrics and particle effects follow the actual layout. |
-| **Modern instruments** | Maps NBS instruments to note-block under-blocks, including copper and waxed copper stages. |
-| **Lyric subtitles** | Optional single `/mpe text chain` command (one impulse command block) driving **per-character** particle subtitles: long-note sentence breaks plus a `chars=` schedule per sentence. |
-| **Particle effects** | Optional `/mpe noteblock chain` bouncing-ball command block per group. |
+| **NBS 转换** | 读取音符与乐器数据，生成可运行的红石链。 |
+| **音轨分组** | 将两个或三个虚拟音轨合并为一个生成组。 |
+| **自动分组** | 支持按乐器类别自动分组，或最大化合并音轨。 |
+| **乐器处理** | 识别乐器并重排音轨，打击乐排在后面。 |
+| **立体声** | 支持单声道音轨与指定立体声音轨，立体声会复制并对称排布。 |
+| **丰富排版** | 平铺、圆形、方形、半圆、半方形、嵌套圆、嵌套方。 |
+| **核心组** | 非平铺排版可选择核心组。 |
+| **阶梯模式** | 支持按组选择默认模式或向下阶梯模式。 |
+| **计时引擎** | 使用中继器与辅助方块表达时间间隔与信号路径。 |
+| **中继器模式** | 均匀：每个空白 tick 一个中继器，时间最直观；合并：每 4 个空白 tick 并成一个 `delay=4` 中继器，结构更短（默认）。两种模式时间轴完全一致，歌词与粒子都会跟随实际布局。 |
+| **现代乐器** | 将 NBS 乐器映射为音符盒下方方块，包含铜块及蜡封铜块阶段。 |
+| **歌词字幕** | 可选生成一条 `/mpe text chain` 命令（单个脉冲命令方块）驱动**逐字**粒子字幕：按长音断句，每句带 `chars=` 时间表。 |
+| **粒子特效** | 可选为每个分组生成 `/mpe noteblock chain` 弹力球命令方块。 |
+| **网页工作台** | 本地网页 UI：按「歌曲 → 音轨 → 排版 → 方块 → 预览 → 编辑 → 导出」引导完成设置，修改即时保存到该歌曲的配置。 |
+| **方块自定义** | 空 tick 占位方块与结构支撑方块都可以替换（默认橡木木板 / 白色羊毛），并用于预览纹理。 |
+| **3D 只读预览** | 从 Minecraft 客户端资源提取真实方块纹理，实例化渲染整座结构；支持旋转、平移、缩放、预设视角与复位摄像机。 |
+| **轨道位置编辑器** | 在 3D 视图中拖动每个分组的起始方块，按 1 格吸附调整高度与横向位置；曲线音量排版由公式决定，不开放手动编辑。 |
 
 ---
 
-## Layouts
+## 排版布局
 
-MiauRedstoneMusic can arrange each group with a different footprint, so the redstone structure matches the shape of your song instead of a single long line.
+MiauRedstoneMusic 可以为每个分组设置不同的排布形态，让红石结构贴合歌曲本身，而不是排成一条长线。
 
-| Layout | Description |
+| 排版 | 说明 |
 | :-- | :-- |
-| **Flat** | Straight rows, the densest and simplest arrangement. |
-| **Circle** | Groups distributed around a ring. |
-| **Square** | Groups distributed around a square. |
-| **Semicircle** | Half-ring arrangement. |
-| **Semisquare** | Half-square arrangement. |
-| **Nested circle** | Concentric rings that reuse space efficiently. |
-| **Nested square** | Concentric squares for compact builds. |
+| **平铺** | 直线排列，最紧凑也最简单。 |
+| **圆形** | 分组沿圆环分布。 |
+| **方形** | 分组沿方形分布。 |
+| **半圆** | 半圆环排列。 |
+| **半方形** | 半方形排列。 |
+| **嵌套圆** | 同心圆环，空间利用率高。 |
+| **嵌套方** | 同心方形，结构紧凑。 |
+| **曲线音量 + 矿车跟随** | 用「离中心轴的距离」还原每个音符的音量，左右声道关于延伸轴对称，并生成一条隐形矿车轨道跟随播放。 |
+
+### 曲线音量排版
+
+`curve` 排版把「音量」编码成**轨道离中心轴的距离**，并利用左右声道叠加来还原 NBS 力度。
+
+**主音轨（菜单 `[m]` 多选）**
+- 固定满音量，无视 NBS 力度；
+- 放在中心轴（玩家走廊）的上方/下方，上下数量尽量均匀；
+- 走廊默认 2 格高，主音轨离玩家最近 3 格，实际听感约 94%。
+
+**其余音轨**
+- 左右各放一个同音高、同 tick 的音符盒（关于中心轴镜像），每个承担 `V/2`：
+  `d = 48 × (1 − V/2)`，V=100% → 24 格，V=0 → 48 格；
+- 左右叠加后正好是 NBS 的目标音量，因此**24 格以内等价于满音量**；
+- 轨道严格 **ABAB**：每个歌曲 tick 固定 2 格 X（1 个中继器 + 1 个音符盒），
+  空 tick 使用「空音符占位方块」代替（默认橡木木板，导电但不发声，可在网页 STEP 04 自定义）；
+- 横向位置跟着距离走：当 Z 变化时，红石线只负责把「上一个被中继器强充能的音符盒/空音符」
+  的信号送进下一个中继器的**背面**（正对输入端），**不依赖红石粉的侧向充能**——
+  红石粉侧面没有端点，侧向是充不了音符盒的；
+- 每个 tick 固定 1 个中继器（2 游戏 tick）。红石线瞬时传导，所以拐弯不影响时间；
+- 红石线单段最多 15 格（加上音符盒本身 = 16 格），所以相邻 tick 的横向距离变化
+  上限为 15 格；超过会在生成时**警告**（对应约 66.7% 的音量变化）并自动平滑，
+  用户可以拉长音符间隔，或安装解除红石线传输距离限制的模组。
+
+**通用**
+- 红石线、中继器、命令方块下方都垫羊毛，粘贴后不会掉落。结构**不自带红石块**，
+  粘贴后按结构前方的「启动」按钮开始播放，按「清除」按钮可复位重播。
+- 玩家沿 `z = 0.5` 走廊前进，普通轨道最近 24 格、主音轨在走廊上下，走廊永远为空。
+- 生成时附带命令方块链：召唤隐形矿车、自动骑乘并逐 tick 传送。
+- 同 tick、同侧的多个音符共用一条轨道，第 2/3 个叠在更外侧（音量略低）——同一时刻同侧只能有一条轨道。
+- 保存后自动回读 `.schem`、检查悬空方块，并逐 tick 模拟红石；统计「左右叠加后的实际音量」与 NBS 力度的误差。
+- 目前不支持歌词字幕与粒子轨道（依赖线性排版坐标），选择曲线时会自动跳过。
 
 ---
 
-## Requirements
+## 环境要求
 
-**Core**
+**核心依赖**
 
 - Python 3.x
-- [`pynbs`](https://pypi.org/) — NBS parsing
-- [`mcschematic`](https://pypi.org/) — structure construction and saving
+- [`pynbs`](https://pypi.org/) —— NBS 解析
+- [`mcschematic`](https://pypi.org/) —— 结构构建与保存
 
-**In-game**
+**游戏环境**
 
 - Minecraft Java Edition 1.21.11
 
-**Optional lyric display**
+**可选歌词显示**
 
-- MiauParticleEffects for Minecraft Java 1.21.11 + Fabric
-- Fabric Loader 0.16.0 or newer
-- The matching Fabric API
+- Minecraft Java 1.21.11 + Fabric 的 MiauParticleEffects
+- Fabric Loader 0.16.0 或更高版本
+- 对应 1.21.11 的 Fabric API
 - Java 21
-- The mod installed on both client and server; a dedicated server needs it to detect note-block events and broadcast them
+- 客户端与服务端都需安装本模组；专用服务器需要安装本模组才能检测音符盒事件并广播
 
-<sub>No dependency lockfile or packaged installer is currently included. Install dependencies according to your Python environment and package sources.</sub>
+<sub>当前仓库没有提供依赖锁定文件或打包安装器，请根据你的 Python 环境和包源安装依赖。</sub>
 
 ---
 
-## Installation
+## 安装
 
-**1 · Clone or download the repository**
+**1 · 克隆或下载仓库**
 
 ```powershell
 git clone https://github.com/omninbs/MiauRedstoneMusic.git
 cd MiauRedstoneMusic
 ```
 
-**2 · Create and activate a virtual environment (optional)**
+**2 · 创建并激活虚拟环境（可选）**
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 ```
 
-**3 · Install dependencies**
+**3 · 安装依赖**
 
 ```powershell
 python -m pip install pynbs mcschematic
 ```
 
-**4 · Prepare an input song**
+**4 · 准备输入文件**
 
-Keep the `.nbs` file you want to convert accessible on your machine.
+将要转换的 `.nbs` 文件放在本地可访问的位置。
 
-<sub>The exact package availability and compatible versions may depend on your environment. This README intentionally does not claim a tested package matrix.</sub>
+<sub>具体可用的包版本可能取决于你的环境。本 README 不声明已经验证过的完整版本矩阵。</sub>
 
 ---
 
-## Usage
+## 使用方法
 
-**Windows launcher**
+**Windows 启动脚本**
 
 ```powershell
 pm.bat
 ```
 
-**Direct entry point**
+**直接启动入口**
 
 ```powershell
 python miau_redstone_music.py
 ```
 
-**Module form**
+**模块方式启动**
 
 ```powershell
 python -m miaunoteblock
 ```
 
-### Interactive Flow
+以上方式都会启动**本地网页工作台**并自动打开浏览器（只监听 `127.0.0.1`，每次启动生成一次性令牌）。
+关闭启动窗口或按 Ctrl+C 即可退出。
 
-| Step | Action |
+**可选参数**
+
+| 参数 | 说明 |
+| :-- | :-- |
+| `--console` | 使用归档的终端交互菜单（原来的控制台流程）。 |
+| `--port <端口>` | 指定本地端口；不填时自动选择空闲端口。 |
+| `--mc-assets <路径>` | 指定 Minecraft 资源目录，默认读取配置里的 `mc_assets_dir`（`D:\MC游戏目录\MC\assets`）。 |
+| `--no-browser` | 只启动服务，不自动打开浏览器。 |
+
+### 网页工作台流程
+
+| 步骤 | 操作 |
 | :--: | :-- |
-| 1 | Enter the path to an `.nbs` file (default prompt: `song.nbs`). |
-| 2 | Choose whether to vertically compress and reorder tracks by instrument. |
-| 3 | Review the detected song metadata and virtual layers. |
-| 4 | Configure grouping, layout, stereo tracks, repeater timing, staircase modes, lyric subtitles, and particle effects (menus `[1]`–`[7]`). |
-| 5 | Press Enter from the menu to generate the structure. |
-| 6 | Enter the output path, or accept `./redstone_music.schem`. |
+| 01 歌曲 | 选择或粘贴 `.nbs` 路径并载入，确认音符、音轨、时长。 |
+| 02 音轨 | 自动分组（乐器优先 / 最大化合并 / 顺序合并），逐条调整分组、立体声与主音轨。 |
+| 03 排版 | 选择平铺、圆形、方形、半圆、半方形、嵌套圆、嵌套方或曲线音量，并调整参数。 |
+| 04 方块 | 自定义空 tick 占位方块与结构支撑方块，查看乐器 → 音符盒底座映射。 |
+| 05 预览 | 只读 3D 预览：真实方块纹理、预设视角、旋转 / 平移 / 缩放、复位摄像机。 |
+| 06 编辑 | 拖动各分组起始方块调整高度 Y 与横向 Z（1 格吸附）；曲线音量排版只读。 |
+| 07 导出 | 确认摘要后生成 `.schem`，可打开所在文件夹。 |
 
-Configuration is **saved per song**: the song's absolute path maps to one fixed file
-(`configs/<song-name>_<path-hash>.json`) that is rewritten after every change, so opening the
-same path again restores the previous layout, lyric and particle settings. Different paths keep
-separate configurations.
+预览与编辑器都支持鼠标、触控板与触屏：单指旋转、双指捏合缩放与平移，右键 / Shift 平移。
 
-The generated file can be loaded with a compatible Minecraft structure workflow, such as a schematic-capable editor or server tool. The generator reports the normalized block bounds and suggests the resulting origin after loading; the exact paste workflow depends on your setup.
+配置会**按歌曲保存**：程序用歌曲文件的绝对路径生成一个固定的配置文件（`configs/<歌曲名>_<路径哈希>.json`），
+每次修改后自动写回；再次打开同一个路径的歌曲时自动恢复上次的分组、排版、方块与轨道偏移设置。
+换一个文件路径就是另一份配置，互不影响。
+
+生成的文件可以使用兼容 Minecraft 结构文件的编辑器或服务器工具加载。生成器会报告归一化后的方块范围，并提示加载后生成的原点；具体粘贴流程取决于你的 Minecraft 环境。
 
 ---
 
-## Lyric Subtitles (`/mpe text chain`, per-character)
+## 歌词字幕（/mpe text chain 逐字）
 
-Generate a synchronous lyric subtitle track that renders through particles. A whole song needs only **one impulse command block plus one command** — no repeater lyric chain inside the structure.
+生成随音乐同步、以粒子渲染的歌词字幕。整首歌只需要**一个脉冲命令方块 + 一条命令**，
+结构里不再需要中继器歌词链。
 
-Lyrics are split on **long notes**: when a character's `duration` is **strictly greater** than the break threshold (default 4 ticks), that character ends the current sentence and the next character starts a new one. On top of that there is a **per-sentence character limit** (default 18; reaching it also breaks, `0` = unlimited). Each sentence becomes one segment carrying a `chars=` schedule of "appear at / stay for" per character, and the mod reveals them one at a time — a finished sentence is never erased by the next one, it simply fades out after its last character.
+歌词先按**长音断句**：某个字的 `duration` **严格大于**断句阈值（默认 4 tick）时，它就是本句的最后一个字，
+下一个字开始新的一句；在此之上还有**每句字数上限**（默认 18 字，达到就断句，0 = 不限）。
+每句一个段，段内用 `chars=` 给每个字一份「出现时刻 + 停留时长」的时间表，
+由模组逐字显示 —— 上一句不会因为下一句出现而被清掉，会在自己最后一个字退场后自然消失。
 
-Lyrics can also be shown **earlier** than the music: by default 4 song ticks (= 8 game ticks, ~0.4 s) ahead, which compensates for the lyrics feeling slightly late. Adjustable in `[2]`.
+歌词还可以整体**提前显示**：默认比音乐早 4 个歌曲 tick（= 8 游戏 tick，约 0.4 秒），
+用来抵消「歌词看起来比音乐慢一点」的感觉，`[2]` 里可调。
 
-1. Import a lyric JSON exported by the lyric editor (menu `[5] → [1]`); importing a lyric file is what enables the feature, and the same menu can clear it. **One record per character** (spaces count as characters) with `duration ≥ 1` is required; otherwise the import fails and lists the offending records.
-2. Adjust settings in `[5] → [3]`: `[1]` color/scale, `[2]` per-character enter/exit timing plus the lead, `[3]`/`[4]` enter/exit animation (chosen by number), `[5]` position (lead distance / height / side offset / random range / follow / command-block layer), `[6]` break threshold / punctuation breaking / per-sentence character limit.
-3. Generate the `.schem` file.
+1. 导入歌词编辑器导出的歌词 JSON（菜单 `[5] → [1]`）；导入即代表启用歌词字幕，同一菜单可以清空。
+   **要求一字一条记录**（空格也算一个字）且 `duration ≥ 1`，不满足时导入会直接报错并列出问题条目。
+2. 在 `[5] → [3] 显示参数` 里调整：`[1]` 颜色/字号、`[2]` 每个字的入场 / 出场时长与提前量、
+   `[3]`/`[4]` 入场 / 出场动画（编号选择）、`[5]` 位置（保持距离 / 高度 / 侧向 / 随机范围 / 跟随 / 链层）、
+   `[6]` 断句阈值 / 标点断句 / 每句字数上限。
+3. 生成 `.schem` 文件。
 
-Generated commands look like:
+生成的命令形如：
 
 ```text
 /mpe text chain ~~~ 78,7,-1,186,0,起来;chars=0:8,8:24|86,7,-1,218,0,不愿;chars=0:8,8:12 color=white scale=10 enter=0 exit=3 towards=-90,0,0 fade=both force=true in=scale:enlarge
 ```
 
-- The anchor is always `~~~` (the command block's own position); per-segment `x,y,z` are offsets from it, so copying or moving the structure needs no data changes.
-- `start` is an absolute tick offset from the moment the command block runs (20 ticks = 1 second). The command block's own 1-tick execution delay is already included, the value is aligned with the music chain's timing origin, and the lead is subtracted (never negative: the first sentence is clamped to tick 0 at worst).
-- The segment `duration` is always `0`: in per-character mode the mod derives the sentence lifetime from `chars=`.
-- `chars=char_start:char_duration,...` must have exactly one entry per **visible character** (`§x` / `&x` color codes do not count; a space, written `_`, does). `char_start` is relative to the segment `start` (first character is 0) and `char_duration` is how long the character stays before it starts exiting. One song tick equals two game ticks, so every value in the schedule is twice the song-tick value; the lead converts the same way.
-- **Breaking**: only `duration > threshold` breaks on duration (`==` does not); the long note stays in the current sentence and plays in full before the whole sentence exits. Larger thresholds give longer sentences (a huge value yields a single sentence for the song). The character limit (default 18, `0` = unlimited) **stacks** with the long-note rule, so a sentence may break earlier on duration. `[6]` can additionally break on punctuation (off by default).
-- **Forbidden animations** in per-character mode: `typewriter` / `wipe` / `spacing` / `scatter` (they conflict with the schedule and the mod rejects them). They are not offered in the menu and are stripped with a warning. Recommended: `enter=0 exit=3 fade=both in=scale:enlarge`.
-- **Lead distance**: the text X coordinate equals the currently powered position plus `lead distance` (default 16 blocks). The structure always extends along **+X**, so the text stays ahead of the action instead of sticking to the camera. The powered position is looked up from the **real chain layout**: with merged repeaters the chain is shorter and the text follows that compressed layout, so both repeater modes stay aligned.
-- **Random jitter**: optional ± range for X/Y/Z (`[5] → random range`, 0 = off), drawn per sentence in 0.5-block steps.
-- Spaces are written as `_`; `|`, `;`, and `,` inside the text are replaced with full-width characters so the command cannot be split incorrectly.
-- Commands longer than roughly 32000 characters are split into several impulse command blocks (split on sentence boundaries, never inside a sentence), each with a unique `id=`.
-- The structure always extends along +X, so `towards=` is fixed at `-90,0,0` (the text faces away from the extension direction, towards the audience on the −X side).
+- 锚点固定写 `~~~`（命令方块自身坐标），段内的 `x,y,z` 是相对锚点的偏移，结构平移或复制后无需改数据。
+- `start` 是相对“命令方块执行那一刻”的绝对 tick（20 tick = 1 秒），已补上命令方块自身的 1 tick 执行延迟、与主音乐链的计时原点对齐，并减去了提前量（不会写出负数 tick：第一句最多提前到 tick 0）。
+- 段的 `duration` 固定写 `0`：逐字模式下由模组按 `chars=` 时间表推导整句生命周期。
+- `chars=字start:字duration,...` 的项数必须等于句子的**可见字符数**（`§x` / `&x` 颜色码不算，空格写成 `_` 算一个）；
+  `字start` 相对段 `start`（首字为 0），`字duration` 是这个字从出现到**开始退场**的时长。
+  歌词数据里 1 个歌曲 tick = 2 游戏 tick，所以时间表里的数值都是歌曲 tick 的两倍；提前量也按同样比例换算。
+- **断句**：`duration > 阈值` 才断句（`== 阈值` 不断），长音字本身留在当前句，会完整唱完再整句退场；
+  阈值调大句子更长，调到很大（如 72000）整首只切成一句。字数上限（默认 18，0 = 不限）与长音规则**叠加**：
+  写满 N 个字也断句，长音则可能更早断。`[6]` 里还能打开「标点断句」（默认关闭）。
+- 逐字模式**禁用** `typewriter` / `wipe` / `spacing` / `scatter`（与时间表冲突，模组会直接报错），
+  菜单里不再提供，生成时也会自动剔除并提示。推荐组合：`enter=0 exit=3 fade=both in=scale:enlarge`。
+- **保持距离**：文字 X 坐标 = 当前激活位置 + `保持距离`（默认 16 方块）。结构固定沿 **+X** 延展，文字始终跑在激活位置前方，跟随拍摄的玩家不会“贴脸”。激活位置按**真实链条布局**查表：中继器用「合并」模式时链条更短，文字位置会同步压缩，两种中继器模式都与链条对齐。
+- **随机抖动**：可给每句文字的位置加 XYZ 三个方向的随机范围（`[5] → 随机范围`，0 = 关闭），每句在 ±N 方块内取值，步进 0.5。
+- 空格写成 `_`；文字里的 `|` `;` `,` 会替换成全角字符，避免把命令拆坏。
+- 命令超过约 32000 字符时会自动拆成多个脉冲命令方块（按句拆，不会拆散一句），并用唯一 `id=` 区分。
+- 结构固定沿 +X 延展，`towards=` 固定为 `-90,0,0`（文字背对延展方向，正对 −X 侧的观众）。
 
-The bouncing-ball effect uses a separate `/mpe noteblock chain` command; pick the participating tracks in menu `[6]`, with detailed parameters in its advanced submenu.
+粒子弹力球特效使用另一条命令（`/mpe noteblock chain`），在菜单 `[6]` 中按轨道开关选择参与的音轨，细参数收在高级子菜单里。
 
-MiauParticleEffects provides the `/mpe` entry point and renders text as particle-based display content. See [mpe_docs.md](mpe_docs.md) for the documented mod environment and command options.
+MiauParticleEffects 提供 `/mpe` 入口，并将文字渲染为基于粒子的显示内容。模组环境和完整命令选项请参阅 [mpe_docs.md](mpe_docs.md)。
 
 ---
 
-## Project Structure
+## 项目结构
 
-| Path | Purpose |
+| 路径 | 说明 |
 | :-- | :-- |
-| `miau_redstone_music.py` | Interactive entry point. |
-| `pm.bat` | Windows launcher for the entry point. |
-| `miaunoteblock/` | Python package holding the generator logic. `app.py` contains the interactive flow and `main()`; `constants.py`, `config.py`, `console.py`, `lyrics.py`, `particles.py`, `instruments.py`, `layout.py`, and `generation.py` hold the reusable modules. |
-| `mpe_docs.md` | MiauParticleEffects command and environment notes. |
-| `configs/` | Per-song configuration files written at runtime (one per song path, git-ignored). |
-| `Readme_CN.md` | Chinese documentation. |
-| `LICENSE` | Apache License 2.0. |
+| `miau_redstone_music.py` | 交互式入口。 |
+| `pm.bat` | 用于启动入口的 Windows 脚本。 |
+| `miaunoteblock/` | 存放生成器逻辑的 Python 包。`app.py` 包含交互流程与入口 `main()`；`constants.py`、`config.py`、`console.py`、`lyrics.py`、`particles.py`、`instruments.py`、`layout.py`、`generation.py` 为可复用模块；`webui/` 是网页工作台（本地服务、纹理提取与 `frontend/` 前端）。 |
+| `mpe_docs.md` | MiauParticleEffects 的命令与环境说明。 |
+| `configs/` | 运行期自动生成的每首歌配置文件（按歌曲路径区分，已在 `.gitignore` 中忽略）。 |
+| `README.md` | 英文文档。 |
+| `LICENSE` | Apache License 2.0。 |
 
 ---
 
-## Brand Assets
+## 品牌资源
 
-The logo in the header is a **placeholder** and should be replaced with the final GitHub raw or CDN asset URL before publishing.
+页首 Logo 为**占位地址**，发布前应替换为最终的 GitHub raw 或 CDN 资源地址。
 
-**Recommended logo specification**
+**推荐 Logo 规格**
 
-| Property | Recommendation |
+| 属性 | 建议 |
 | :-- | :-- |
-| **Format** | SVG (preferred) or PNG |
-| **Size** | 512 × 512 px |
-| **Background** | Transparent |
-| **Style** | Simple, recognizable at small sizes, readable on both light and dark GitHub themes |
-| **Display width** | 140–180 px in the README header |
+| **格式** | SVG（优先）或 PNG |
+| **尺寸** | 512 × 512 px |
+| **背景** | 透明 |
+| **风格** | 简洁、在小尺寸下仍可识别、在 GitHub 明暗主题下都清晰 |
+| **页首显示宽度** | 140–180 px |
 
-A flat, single-object mark with a limited palette works best: it stays legible as a favicon, a social preview, and an in-README badge.
-
----
-
-## Notes and Limitations
-
-> **Notes**
-> - The input file must contain notes; empty NBS files cannot produce a music chain.
-> - Lyric rendering requires MiauParticleEffects. Without the mod, the generated lyric commands will not provide their intended display.
-> - Minecraft Java, Fabric, Fabric API, Java, and MiauParticleEffects versions should match the target environment, especially for 1.21.11.
-
-> **Limitations**
-> - Large songs, dense chords, small particle density, or many simultaneous effects may require substantial Minecraft performance headroom.
-> - The tool currently generates `.schem` structures only; it does not export a standalone command text file or another structure format.
-> - Configuration is saved automatically per **song file path** under `configs/` in the install directory (one JSON per path); delete that JSON to reset a song back to defaults.
-> - The repository does not currently provide official release binaries, screenshots, or a verified download URL.
+建议使用扁平化、单一主体的图形搭配有限配色：这样它既能作为 favicon 与社交预览图，也能在 README 页首保持清晰。
 
 ---
 
-## Contributing
+## 注意事项与限制
 
-Contributions are welcome. Before opening a pull request:
+> **注意事项**
+> - 输入文件必须包含音符；没有音符的 NBS 文件无法生成红石音乐链。
+> - 歌词显示依赖 MiauParticleEffects。未安装该模组时，生成的歌词命令无法实现预期显示。
+> - Minecraft Java、Fabric、Fabric API、Java 和 MiauParticleEffects 的版本应与目标环境匹配，尤其是 1.21.11 环境。
 
-- Explain the user-visible behavior you changed.
-- Keep conversion behavior and Minecraft version assumptions explicit.
-- Preserve the existing interactive workflow unless the change requires otherwise.
-- Include a reproducible example when changing NBS parsing, timing, layout, instrument mapping, or lyric commands.
-- Do not include copyrighted music files, secrets, or generated build artifacts in commits.
-
----
-
-## License
-
-Released under the **Apache License 2.0**. See [LICENSE](LICENSE) for the full text.
-
-You are free to use, modify, and distribute this project in compliance with the license terms.
+> **限制**
+> - 较长的歌曲、密集和弦、较小的粒子间距或大量同时显示的特效，可能需要较多 Minecraft 性能余量。
+> - 当前工具只生成 `.schem` 结构，不导出独立的命令文本文件或其他结构格式。
+> - 配置文件按**歌曲文件路径**自动保存到安装目录的 `configs/`（一个路径一个 JSON），换歌就换配置；删除对应 JSON 即可把这首歌恢复成默认设置。
+> - 当前仓库没有提供官方发布二进制包、截图或已验证的下载链接。
 
 ---
 
-## AI-Generated Code Notice
+## 参与贡献
 
-> Approximately **70%** of the code was generated with AI assistance. Perfect quality cannot be guaranteed, although the AI is impressive. Some code comments may be imperfect, and the codebase may contain unrelated AI-generated notes. When reading or reviewing the code, you may want to use AI assistance as an additional aid.
+欢迎提交贡献。创建 Pull Request 前请注意：
+
+- 说明变更对用户可见的行为。
+- 明确保留转换行为和 Minecraft 版本假设。
+- 除非变更确实需要，否则请保持现有交互流程。
+- 如果修改 NBS 解析、计时、排版、乐器映射或歌词命令，请提供可复现的示例。
+- 不要在提交中加入受版权保护的音乐文件、密钥或生成产物。
 
 ---
 
-## Acknowledgements
+## 许可证
 
-| Project | Role |
+本项目采用 **Apache License 2.0** 授权。完整条款请参阅 [LICENSE](LICENSE)。
+
+在遵守许可证条款的前提下，你可以自由使用、修改和分发本项目。
+
+---
+
+## AI 生成代码声明
+
+> 约 **70%** 的代码由 AI 协助生成。不能保证代码质量完美，但 AI 的表现令人印象深刻。部分代码注释可能不够完善，代码库中也可能存在 AI 生成的无关备注。阅读或审查代码时，可以让 AI 作为额外的辅助工具。
+
+---
+
+## 致谢
+
+| 项目 | 用途 |
 | :-- | :-- |
-| [`pynbs`](https://pypi.org/) | NBS file parsing |
-| [`mcschematic`](https://pypi.org/) | Schematic construction and saving |
-| MiauParticleEffects | Optional lyric command-block workflow |
+| [`pynbs`](https://pypi.org/) | NBS 文件解析 |
+| [`mcschematic`](https://pypi.org/) | 结构构建与保存 |
+| MiauParticleEffects | 可选的歌词命令方块工作流 |
 
-<sub>The links above point to package indexes rather than claiming a specific project page or release artifact.</sub>
+<sub>上面的链接指向包索引，并不代表本项目已经提供了特定的上游项目页面或发布文件。</sub>
 
 <div align="center">
 <br />
-<sub>Built for the Minecraft Java redstone music community.</sub>
+<sub>为 Minecraft Java 红石音乐社区而构建。</sub>
 </div>

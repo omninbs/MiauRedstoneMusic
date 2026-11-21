@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="miau-token" content="__MIAU_TOKEN__" />
+<meta name="color-scheme" content="dark" />
+<title>MiauRedstoneMusic · 网页工作台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+<div class="backdrop" aria-hidden="true">
+  <div class="backdrop-grid"></div>
+  <div class="backdrop-glow glow-a"></div>
+  <div class="backdrop-glow glow-b"></div>
+  <div class="backdrop-noise"></div>
+</div>
+
+<header class="topbar">
+  <a class="brand" href="#" id="brand-home" aria-label="回到第一步">
+    <span class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M6 25V9l10 7 10-7v16" />
+        <path d="M6 9h20" opacity=".45" />
+        <circle cx="16" cy="21" r="2.4" />
+      </svg>
+    </span>
+    <span class="brand-text">
+      <span class="brand-name">Miau<span>Redstone</span>Music</span>
+      <span class="brand-sub">网页工作台 · NBS → 红石音乐</span>
+    </span>
+  </a>
+
+  <div class="topbar-meta">
+    <span class="chip chip-muted" id="chip-song"><span class="dot"></span><span id="chip-song-text">尚未载入歌曲</span></span>
+    <button class="chip is-warn" id="chip-warnings" type="button" hidden>
+      <span class="dot"></span><span id="chip-warnings-text">—</span>
+    </button>
+  </div>
+
+  <div class="topbar-actions">
+    <button class="btn btn-ghost btn-sm" id="btn-help" type="button">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="10" cy="10" r="7.2"/><path d="M8.2 7.6a1.9 1.9 0 1 1 3.1 1.5c-.8.6-1.3 1-1.3 1.9"/><circle cx="10" cy="13.9" r=".7" fill="currentColor" stroke="none"/></svg>
+      使用说明
+    </button>
+    <button class="btn btn-ghost btn-sm" id="btn-reload" type="button" title="重新载入页面状态">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M16 10a6 6 0 1 1-1.7-4.2"/><path d="M16 4v4h-4"/></svg>
+      刷新
+    </button>
+  </div>
+</header>
+
+<div class="shell">
+  <nav class="rail" id="rail" aria-label="配置步骤">
+    <div class="rail-head">
+      <span class="rail-kicker">工作流程</span>
+      <span class="rail-count" id="rail-count">0 / 7</span>
+    </div>
+    <ol class="rail-list" id="rail-list"></ol>
+    <div class="rail-foot">
+      <div class="rail-progress"><span id="rail-bar"></span></div>
+      <p class="rail-note" id="rail-note">从载入 NBS 歌曲开始。每一步都会自动保存到这首歌的配置里。</p>
+    </div>
+  </nav>
+
+  <main class="stage" id="stage">
+
+    <!-- ══ 01 歌曲 ══ -->
+    <section class="step" data-step="1" aria-labelledby="step1-title">
+      <div class="step-head">
+        <span class="kicker">STEP 01 · 输入</span>
+        <h1 id="step1-title">载入一首 <em>NBS</em> 歌曲</h1>
+        <p class="lede">选择 Note Block Studio 导出的 <code>.nbs</code> 文件。解析后会显示音符数量、音轨与时长，之后的设置都会按这首歌单独保存。</p>
+      </div>
+
+      <div class="card">
+        <label class="field-label" for="song-path">歌曲文件路径</label>
+        <div class="field-row">
+          <input class="input input-mono" id="song-path" type="text" spellcheck="false" placeholder="D:\Music\song.nbs" autocomplete="off" />
+          <button class="btn btn-ghost" id="btn-pick-song" type="button">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2.8 6.2h5l1.5 1.7h7.9v7.3a1 1 0 0 1-1 1H3.8a1 1 0 0 1-1-1z"/><path d="M2.8 6.2V5a1 1 0 0 1 1-1h4"/></svg>
+            浏览
+          </button>
+          <button class="btn btn-primary" id="btn-load-song" type="button">
+            载入歌曲
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 10h11"/><path d="M11 6l4 4-4 4"/></svg>
+          </button>
+        </div>
+        <p class="field-hint">也支持在控制台窗口用 <code>--console</code> 启动旧的命令行界面。</p>
+      </div>
+
+      <div class="song-card" id="song-card" hidden>
+        <div class="song-main">
+          <span class="song-badge">已载入</span>
+          <h2 id="song-name">—</h2>
+          <p id="song-author">—</p>
+        </div>
+        <dl class="stat-row" id="song-stats"></dl>
+        <div class="song-actions">
+          <button class="btn btn-primary" data-goto="2" type="button">下一步：音轨分组</button>
+        </div>
+      </div>
+
+      <div class="empty-state" id="song-empty">
+        <div class="empty-icon" aria-hidden="true">
+          <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="9" y="15" width="30" height="24" rx="3"/><path d="M9 21h30"/><path d="M20 27v7l7-3.5z" fill="currentColor" stroke="none"/><path d="M15 11v4M24 9v6M33 11v4"/></svg>
+        </div>
+        <p>还没有载入歌曲</p>
+        <span>选择文件后点击「载入歌曲」，或直接把路径粘贴到上面的输入框。</span>
+      </div>
+    </section>
+
+    <!-- ══ 02 音轨 ══ -->
+    <section class="step" data-step="2" aria-labelledby="step2-title">
+      <div class="step-head">
+        <span class="kicker">STEP 02 · 组织</span>
+        <h2 id="step2-title">音轨分组与主音轨</h2>
+        <p class="lede">每条音轨都会生成一条独立的红石轨道。把音色相近的音轨并成一组可以让结构更紧凑；勾选「主音轨」的轨道固定满音量，排在走廊上下。</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <h3>自动分组</h3>
+            <p>按乐器类别或顺序快速得到一份分组草稿，之后仍可逐条调整。</p>
+          </div>
+          <div class="segmented" id="auto-group">
+            <button class="seg" data-mode="1" type="button">乐器优先</button>
+            <button class="seg" data-mode="2" type="button">最大化合并</button>
+            <button class="seg" data-mode="3" type="button">顺序合并</button>
+            <button class="seg" data-mode="4" type="button">按音量</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <h3>分组看板</h3>
+            <p id="track-summary">—</p>
+          </div>
+          <span class="chip chip-muted"><span class="dot"></span><span id="group-count">0 组</span></span>
+        </div>
+        <div class="group-board" id="group-board"></div>
+        <p class="field-hint">先点一条音轨选中，再点任意分组的「移入本组」；桌面端也可以直接把音轨拖到目标分组卡片上。</p>
+      </div>
+
+      <div class="card track-detail" id="track-detail-card" hidden>
+        <div class="card-head">
+          <div>
+            <h3 id="track-detail-title">音轨设置</h3>
+            <p id="track-detail-meta">—</p>
+          </div>
+          <button class="btn btn-ghost btn-sm" id="track-split" type="button">独立成组</button>
+        </div>
+        <div class="toggle-row">
+          <label class="switch-line">
+            <input type="checkbox" id="track-stereo" />
+            <span>立体声：复制成左右两条对称轨道</span>
+          </label>
+          <label class="switch-line">
+            <input type="checkbox" id="track-master" />
+            <span>主音轨：音量控制排版中固定满音量</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="step-foot">
+        <button class="btn btn-ghost" data-goto="1" type="button">上一步</button>
+        <button class="btn btn-primary" data-goto="3" type="button">下一步：选择排版</button>
+      </div>
+    </section>
+
+    <!-- ══ 03 排版 ══ -->
+    <section class="step" data-step="3" aria-labelledby="step3-title">
+      <div class="step-head">
+        <span class="kicker">STEP 03 · 形态</span>
+        <h2 id="step3-title">选择结构排版</h2>
+        <p class="lede">排版决定轨道在三维空间中的形状。想要还原 NBS 力度就选「音量控制」；只想要一条稳妥的长链就选「平铺」。</p>
+      </div>
+
+      <div class="style-grid" id="style-grid"></div>
+
+      <div class="card" id="param-card">
+        <div class="card-head">
+          <div>
+            <h3>排版参数</h3>
+            <p id="param-desc">—</p>
+          </div>
+          <span class="chip chip-accent" id="param-style-name">—</span>
+        </div>
+        <div class="param-grid" id="param-grid"></div>
+        <div class="notice" id="curve-notice" hidden>
+          <strong>音量控制排版</strong>
+          <span>左右各放一个同音高音符盒，每个承担一半音量；距离越远越轻，主音轨固定在走廊上下。结构不预置红石块，粘贴后用前方的「启动 / 清除」按钮控制。</span>
+        </div>
+      </div>
+
+      <div class="card particles-card">
+        <div class="card-head">
+          <div>
+            <h3>音符盒粒子特效</h3>
+            <p>用 MiauParticleEffects 让弹力球在音符盒之间跳动。每个参与分组生成一颗球，按歌曲时间轴驱动。</p>
+          </div>
+          <label class="switch"><input type="checkbox" id="particles-enabled" /><span></span></label>
+        </div>
+        <div class="particles-body" id="particles-body">
+          <div class="particles-block">
+            <span class="field-label">参与的音轨</span>
+            <div class="particle-layers" id="particle-layers"></div>
+            <p class="field-hint">同一分组的多条音轨只会生成一颗球；至少选择一条音轨才会生效。</p>
+          </div>
+          <div class="particles-block">
+            <div class="particles-row">
+              <span class="field-label">风格预设</span>
+              <div class="segmented" id="particle-presets">
+                <button class="seg" data-particle-preset="light" type="button">轻</button>
+                <button class="seg" data-particle-preset="normal" type="button">中</button>
+                <button class="seg" data-particle-preset="strong" type="button">强</button>
+              </div>
+            </div>
+          </div>
+          <div class="param-grid" id="particle-params"></div>
+          <div class="particles-colors">
+            <label class="particles-field">
+              <span class="field-label">纯色</span>
+              <input class="input input-mono" id="particle-color" type="text" spellcheck="false"
+                     placeholder="#RRGGBB / rainbow，留空交给模组" autocomplete="off" />
+            </label>
+            <label class="particles-field">
+              <span class="field-label">渐变</span>
+              <input class="input input-mono" id="particle-gradient" type="text" spellcheck="false"
+                     placeholder="#RRGGBB,#RRGGBB，留空不使用" autocomplete="off" />
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="step-foot">
+        <button class="btn btn-ghost" data-goto="2" type="button">上一步</button>
+        <button class="btn btn-primary" data-goto="4" type="button">下一步：方块自定义</button>
+      </div>
+    </section>
+
+    <!-- ══ 04 方块 ══ -->
+    <section class="step" data-step="4" aria-labelledby="step4-title">
+      <div class="step-head">
+        <span class="kicker">STEP 04 · 材质</span>
+        <h2 id="step4-title">自定义方块</h2>
+        <p class="lede">空 tick 需要一个「导电但不发声」的方块占位，红石线、中继器与命令方块下面需要一层支撑方块。两者都可以换成你喜欢的材质。</p>
+      </div>
+
+      <div class="block-pickers">
+        <div class="card block-picker">
+          <div class="picker-preview" id="preview-empty"><span class="picker-loading">纹理</span></div>
+          <div class="picker-body">
+            <span class="kicker">空音符占位</span>
+            <h3>空 tick 方块</h3>
+            <p>必须能被红石信号充能，且自身不发声。默认是橡木木板，也可以直接填模组方块。</p>
+            <input class="input input-mono" id="input-empty-block" type="text" spellcheck="false" placeholder="minecraft:oak_planks" autocomplete="off" />
+            <div class="picker-status" id="status-empty"></div>
+            <div class="block-gallery" id="gallery-empty"></div>
+          </div>
+        </div>
+
+        <div class="card block-picker">
+          <div class="picker-preview" id="preview-support"><span class="picker-loading">纹理</span></div>
+          <div class="picker-body">
+            <span class="kicker">结构支撑</span>
+            <h3>支撑方块</h3>
+            <p>垫在中继器、空 tick 方块和沙砾下方，避免粘贴后掉落。默认是白色羊毛。</p>
+            <input class="input input-mono" id="input-support-block" type="text" spellcheck="false" placeholder="minecraft:white_wool" autocomplete="off" />
+            <div class="picker-status" id="status-support"></div>
+            <div class="block-gallery" id="gallery-support"></div>
+          </div>
+        </div>
+      </div>
+
+      <p class="field-hint">方框内可输入任意 <code>命名空间:方块ID</code>（支持模组方块）。ID 合法且能在原版资源里找到纹理时会显示真实方块，否则使用稳定的纯色占位，不影响生成结果。</p>
+
+      <div class="step-foot">
+        <button class="btn btn-ghost" data-goto="3" type="button">上一步</button>
+        <button class="btn btn-primary" data-goto="5" type="button">下一步：3D 预览</button>
+      </div>
+    </section>
+
+    <!-- ══ 05 预览 ══ -->
+    <section class="step step-viewport" data-step="5" aria-labelledby="step5-title">
+      <div class="step-head compact">
+        <div>
+          <span class="kicker">STEP 05 · 检查</span>
+          <h2 id="step5-title">结构 3D 预览</h2>
+        </div>
+        <div class="legend-strip" id="preview-legend"></div>
+      </div>
+
+      <div class="viewport-panel">
+        <div class="viewport-toolbar">
+          <div class="tool-row" role="group" aria-label="视角">
+            <button class="tool" data-view="iso" type="button" title="等轴视角">等轴</button>
+            <button class="tool" data-view="top" type="button" title="俯视">俯视</button>
+            <button class="tool" data-view="front" type="button" title="正面">正面</button>
+            <button class="tool" data-view="side" type="button" title="侧面">侧面</button>
+          </div>
+          <div class="tool-spacer"></div>
+          <label class="tool-check">
+            <input type="checkbox" id="preview-spin" />
+            <span>自动旋转</span>
+          </label>
+          <button class="tool tool-accent" id="preview-reset" type="button">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M16 10a6 6 0 1 1-1.7-4.2"/><path d="M16 4v4h-4"/></svg>
+            复位摄像机
+          </button>
+        </div>
+
+        <div class="viewport-canvas-wrap" id="preview-wrap">
+          <canvas id="preview-canvas"></canvas>
+          <div class="viewport-overlay">
+            <span class="view-hint">左键旋转 · 中键 / 右键平移 · 滚轮缩放</span>
+            <span class="view-badge" id="preview-badge">—</span>
+          </div>
+          <div class="viewport-loading" id="preview-loading" hidden>
+            <span class="spinner"></span>
+            <p>正在构建结构…</p>
+          </div>
+        </div>
+
+        <div class="viewport-footer">
+          <label class="tick-range">
+            <span>预览长度</span>
+            <input type="range" id="preview-ticks" min="16" max="240" step="8" value="240" />
+            <output id="preview-ticks-label">240 tick</output>
+          </label>
+          <button class="btn btn-ghost btn-sm" id="preview-refresh" type="button">重新生成预览</button>
+        </div>
+      </div>
+
+      <div class="stats-strip" id="preview-stats"></div>
+      <div class="warning-list" id="preview-warnings"></div>
+
+      <div class="step-foot">
+        <button class="btn btn-ghost" data-goto="4" type="button">上一步</button>
+        <button class="btn btn-primary" data-goto="6" type="button">下一步：轨道位置编辑器</button>
+      </div>
+    </section>
+
+    <!-- ══ 06 编辑器 ══ -->
+    <section class="step step-viewport" data-step="6" aria-labelledby="step6-title">
+      <div class="step-head compact">
+        <div>
+          <span class="kicker">STEP 06 · 微调</span>
+          <h2 id="step6-title">轨道位置编辑器</h2>
+        </div>
+        <span class="chip chip-muted" id="editor-mode-chip"><span class="dot"></span><span>可编辑</span></span>
+      </div>
+
+      <div class="editor-layout" id="editor-layout">
+        <div class="viewport-panel">
+          <div class="viewport-toolbar">
+            <div class="tool-row" role="group" aria-label="视图模式">
+              <button class="tool is-active" data-editor-mode="3d" type="button">3D 视图</button>
+              <button class="tool" data-editor-mode="2d" type="button">2D 切面</button>
+            </div>
+            <div class="tool-row" id="editor-3d-tools" role="group" aria-label="视角">
+              <button class="tool" data-editor-view="iso" type="button">等轴</button>
+              <button class="tool" data-editor-view="top" type="button">俯视</button>
+              <button class="tool" data-editor-view="front" type="button">正面</button>
+              <button class="tool" data-editor-view="side" type="button">侧面</button>
+            </div>
+            <div class="tool-row" id="editor-2d-tools" role="group" aria-label="2D 切面缩放" hidden>
+              <button class="tool" data-edit2d-zoom="in" type="button">放大</button>
+              <button class="tool" data-edit2d-zoom="out" type="button">缩小</button>
+              <button class="tool" data-edit2d-zoom="fit" type="button">适配</button>
+            </div>
+            <div class="tool-spacer"></div>
+            <button class="tool tool-accent" id="editor-reset-cam" type="button">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M16 10a6 6 0 1 1-1.7-4.2"/><path d="M16 4v4h-4"/></svg>
+              复位视角
+            </button>
+          </div>
+          <div class="viewport-canvas-wrap editor-canvas-wrap" id="editor-wrap">
+            <canvas id="editor-canvas"></canvas>
+            <div class="viewport-overlay">
+              <span class="view-hint">拖动发光标记调整高度与横向位置 · 左键旋转 · 中键 / 右键平移</span>
+              <span class="view-badge" id="editor-badge">—</span>
+            </div>
+            <div class="viewport-loading" id="editor-loading" hidden>
+              <span class="spinner"></span>
+              <p>正在准备编辑器…</p>
+            </div>
+          </div>
+          <div class="viewport-canvas-wrap editor-canvas-wrap" id="editor2d-wrap" hidden>
+            <canvas id="editor2d-canvas"></canvas>
+            <div class="viewport-overlay">
+              <span class="view-hint">面向延展方向的切面：拖动标记调高度 Y · 空白拖动平移 · 滚轮缩放</span>
+              <span class="view-badge" id="editor2d-badge">—</span>
+            </div>
+          </div>
+        </div>
+
+        <aside class="editor-panel">
+          <div class="card-head">
+            <div>
+              <h3>起始方块</h3>
+              <p>每个分组的第一格中继器位置。音量控制排版不可手动调整。</p>
+            </div>
+            <button class="btn btn-ghost btn-sm" id="editor-reset-offsets" type="button">恢复默认</button>
+          </div>
+          <div class="marker-list" id="marker-list"></div>
+          <p class="field-hint">X 轴严格由歌曲 tick 决定，所以这里只能改「高度 Y」和「横向 Z」。拖动时按 1 格吸附。</p>
+        </aside>
+      </div>
+
+      <div class="notice notice-soft" id="editor-locked" hidden>
+        <strong>音量控制排版不支持手动编辑</strong>
+        <span>音符盒到中心轴的距离由音量公式决定，手动改动会破坏 NBS 力度还原。请回上一步查看预览。</span>
+      </div>
+
+      <div class="step-foot">
+        <button class="btn btn-ghost" data-goto="5" type="button">上一步</button>
+        <button class="btn btn-primary" data-goto="7" type="button">下一步：导出结构</button>
+      </div>
+    </section>
+
+    <!-- ══ 07 导出 ══ -->
+    <section class="step" data-step="7" aria-labelledby="step7-title">
+      <div class="step-head">
+        <span class="kicker">STEP 07 · 输出</span>
+        <h2 id="step7-title">生成 <em>.schem</em> 结构</h2>
+        <p class="lede">确认下面的摘要后生成 WorldEdit v3 结构文件。生成过程会回读方块、检查悬空并输出统计。</p>
+      </div>
+
+      <div class="summary-grid" id="export-summary"></div>
+
+      <div class="card">
+        <div class="export-length">
+          <label class="field-label" for="export-ticks">导出长度</label>
+          <div class="field-row">
+            <input class="input input-mono" id="export-ticks" type="number" min="1" step="1" />
+            <span class="field-hint" id="export-ticks-hint">tick（留空 = 全曲）</span>
+          </div>
+        </div>
+        <label class="field-label" for="output-path">输出文件</label>
+        <div class="field-row">
+          <input class="input input-mono" id="output-path" type="text" spellcheck="false" />
+          <button class="btn btn-ghost" id="btn-pick-output" type="button">浏览</button>
+          <button class="btn btn-primary" id="btn-generate" type="button">
+            生成结构
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M10 3v9"/><path d="M6 8l4 4 4-4"/><path d="M4 16h12"/></svg>
+          </button>
+        </div>
+        <p class="field-hint">默认保存到程序目录。文件使用 Minecraft Java 1.21.11 的方块 ID。</p>
+      </div>
+
+      <div class="result-card" id="export-result" hidden>
+        <div class="result-head">
+          <span class="result-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
+          </span>
+          <div>
+            <h3>结构已生成</h3>
+            <p id="result-path">—</p>
+          </div>
+          <button class="btn btn-ghost btn-sm" id="btn-open-folder" type="button">打开所在文件夹</button>
+        </div>
+        <dl class="stat-row" id="result-stats"></dl>
+      </div>
+
+      <div class="warning-list" id="export-warnings"></div>
+
+      <div class="step-foot">
+        <button class="btn btn-ghost" data-goto="6" type="button">上一步</button>
+        <button class="btn btn-ghost" id="btn-again" type="button">再做一首</button>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<dialog class="dialog" id="help-dialog">
+  <div class="dialog-head">
+    <h2>使用说明</h2>
+    <button class="icon-btn" id="help-close" type="button" aria-label="关闭">×</button>
+  </div>
+  <div class="dialog-body">
+    <h3>推荐流程</h3>
+    <ol>
+      <li>载入 <code>.nbs</code> 歌曲，确认音符与时长。</li>
+      <li>在分组看板里把音轨拖进同一组；想做力度还原就把主要旋律设成「主音轨」。</li>
+      <li>选择排版。音量控制会生成左右对称的双轨，并用隐形矿车跟随。</li>
+      <li>需要弹力球特效时，在排版页打开「音符盒粒子特效」并选择参与的音轨。</li>
+      <li>按需要替换空 tick 方块与支撑方块，支持直接输入模组方块 ID。</li>
+      <li>在 3D 预览里检查结构，再在编辑器里切换 3D / 2D 微调各组的起始位置。</li>
+      <li>生成 <code>.schem</code>，用 WorldEdit 粘贴即可。</li>
+    </ol>
+    <h3>操作</h3>
+    <ul>
+      <li>左键拖拽旋转，中键或右键拖拽平移，滚轮缩放；触屏支持单指旋转、双指缩放与平移。</li>
+      <li>「复位视角」会把镜头拉回默认取景；编辑器的「2D 切面」是面向延展方向的 X-Y 视图，可直接拖动标记改高度。</li>
+      <li>音量控制排版的落点由公式决定，不提供手动编辑。</li>
+    </ul>
+    <h3>方块纹理</h3>
+    <p>预览纹理会自动从 Minecraft 客户端资源中提取；找不到时使用稳定的纯色方块代替，不影响生成结果。</p>
+  </div>
+</dialog>
+
+<script src="/static/viewer.js"></script>
+<script src="/static/editor2d.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

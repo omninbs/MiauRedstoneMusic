@@ -25,6 +25,19 @@ DEFAULT_CONFIG = {
     "stereo_layers": [],
     "uniform_repeater_mode": False,
     "group_staircase_modes": {},  # 每组生成模式：{"0": "staircase", "1": "default", ...}
+    # ── 音量控制排版（layout_style = "curve"）──────────────────
+    "curve_lane_spacing": 3,          # 普通车道之间的垂直间距（格）
+    "curve_minecart": True,           # 生成隐形矿车跟随玩家的命令方块链
+    "curve_sound_range": 48.0,        # 音符盒可听半径（音量公式的分母）
+    "curve_master_layers": [],        # 主音轨（原始音轨 id，固定满音量、放中心轴上）
+    "curve_master_spacing": 3,        # 主音轨之间的垂直间距（格）
+    "curve_corridor_height": 2,       # 玩家走廊高度（格）
+    # ── 方块自定义 ───────────────────────────────────────────
+    "empty_block": "minecraft:oak_planks",   # 空 tick 占位方块（导电、不发声）
+    "support_block": "minecraft:white_wool",  # 结构支撑方块（垫在红石线/中继器/命令方块下）
+    "group_offsets": {},              # 手动微调的轨道起始位置：{"组号": {"y": 0, "side": -3}}
+    "layer_groups": [],               # 音轨分组的持久化：[[vid, vid], [vid], ...]
+    "mc_assets_dir": r"D:\MC游戏目录\MC\assets",  # Minecraft 资源目录（用于网页 3D 纹理）
     # ── 歌词（/mpe text chain 逐字粒子字幕）──────────────────────
     "lyrics_color": "white",
     "lyrics_scale": 10.0,
