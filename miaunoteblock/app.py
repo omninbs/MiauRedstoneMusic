@@ -44,7 +44,7 @@ from .config import (
     save_song_config,
 )
 from .console import ask_number, clear_screen, terminal_columns
-from .constants import Ansi, DIR_OFFSET, VERSION
+from .constants import Ansi, DIR_OFFSET, OPPOSITE_FACING, VERSION
 from .generation import (
     build_all_commands_virtual,
     find_structure_bottom,
@@ -536,31 +536,46 @@ def _rel(value: int) -> str:
 
 def _launch_chain(targets: List[Tuple[object, Tuple[int, int, int]]],
                   start: Tuple[int, int, int], direction: str) -> List[str]:
-    """生成启动链：一列朝上的命令方块，逐个把启动红石块放到各轨道的输入侧。
+    """生成「启动」「清除」两条命令方块链，并由玩家手动按按钮触发。
 
-    结构自带一个启动红石块，粘贴后立刻给第一个脉冲命令方块供电，
-    音乐与矿车自动开始，不需要玩家手动触发。红石块会保留，
-    想重播时拆掉再放回即可。
+    结构**不自带红石块**，粘贴后不会自动播放：
+    - 启动按钮 → 放置列把红石块放到各轨道输入侧；
+    - 清除按钮 → 清除列把这些红石块变回空气，方便重播。
     """
     dx, _, dz = DIR_OFFSET[direction]
     start_x, start_y, start_z = start
     place_x, place_z = start_x - 5 * dx, start_z - 5 * dz
+    clear_x, clear_z = start_x - 7 * dx, start_z - 7 * dz
     if not targets:
         return []
 
-    chain = [f"setblock {place_x} {start_y - 1} {place_z} minecraft:redstone_block"]
+    facing = OPPOSITE_FACING[direction]
+    chain = [
+        f"setblock {place_x - dx} {start_y} {place_z - dz} "
+        f"minecraft:stone_button[face=wall,facing={facing},powered=false]",
+        f"setblock {clear_x - dx} {start_y} {clear_z - dz} "
+        f"minecraft:stone_button[face=wall,facing={facing},powered=false]",
+    ]
     for index, (_, (ax, ay, az)) in enumerate(targets):
         cy = start_y + index
         place_cmd = (f"setblock {_rel(ax - place_x)} {_rel(ay - cy)} {_rel(az - place_z)} "
                      f"minecraft:redstone_block")
+        clear_cmd = (f"setblock {_rel(ax - clear_x)} {_rel(ay - cy)} {_rel(az - clear_z)} "
+                     f"minecraft:air")
         place_json = json.dumps(place_cmd)
+        clear_json = json.dumps(clear_cmd)
         if index == 0:
             chain.append(f"setblock {place_x} {cy} {place_z} "
                          f"minecraft:command_block[facing=up]{{Command:{place_json}}}")
+            chain.append(f"setblock {clear_x} {cy} {clear_z} "
+                         f"minecraft:command_block[facing=up]{{Command:{clear_json}}}")
         else:
             chain.append(f"setblock {place_x} {cy} {place_z} "
                          f"minecraft:chain_command_block[facing=up,conditional=false]"
                          f"{{Command:{place_json},auto:1b}}")
+            chain.append(f"setblock {clear_x} {cy} {clear_z} "
+                         f"minecraft:chain_command_block[facing=up,conditional=false]"
+                         f"{{Command:{clear_json},auto:1b}}")
     return chain
 
 
@@ -661,6 +676,7 @@ def generate(config: dict, song, virtual_layers: List[dict], layer_to_group: Dic
     if config.get("layout_style") == "curve" and meta:
         saved_path = schem_path if schem_path.lower().endswith(".schem") else schem_path + ".schem"
         _verify_curve(saved_path, meta, max_tick)
+    print(Ansi.info("粘贴后按结构前方的「启动」按钮开始播放；按「清除」按钮可复位重播。"))
 
 
 def _verify_curve(schem_path: str, meta: dict, max_tick: int) -> None:

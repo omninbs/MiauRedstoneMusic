@@ -123,7 +123,7 @@ The curve layout encodes **volume** as the track's distance from the center axis
 - A single wire run is limited to 15 blocks (16 including the note block), so the lateral change per tick is capped at 15 blocks. Larger jumps trigger a warning at generation time (about 66.7% volume change) and are smoothed; stretch the notes or install a mod that lifts the wire limit.
 
 **General**
-- Wool sits under every wire, repeater and command block, so nothing pops off. The structure ships with its own start redstone block, so **pasting starts playback automatically**.
+- Wool sits under every wire, repeater and command block, so nothing pops off. The structure does **not** ship with a redstone block: press the **Start** button in front of the chain to play, and the **Clear** button to reset for another run.
 - The player rides along `z = 0.5`; ordinary tracks stay at least 24 blocks away and master tracks sit above/below, so the corridor is always empty.
 - A command-block chain summons an invisible minecart, mounts the nearest player and teleports it once per tick.
 - Multiple notes on the same side and tick share one track (the 2nd/3rd stack further out with slightly lower volume).
