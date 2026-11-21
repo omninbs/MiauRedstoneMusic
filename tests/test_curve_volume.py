@@ -149,7 +149,7 @@ def make_curve_layers():
 
 
 def test_path_geometry():
-    print("测试 2：轨道几何（3 格/tick / 红石线 ≤15 / 无悬空 / 离轴 ≥24）")
+    print("测试 2：轨道几何（2 格/tick ABAB / 红石线 ≤15 / 无悬空 / 离轴 ≥24）")
     chk = Checks()
     virtual_layers, layer_to_group = make_curve_layers()
     config = base_config(curve_master_layers=[0])
@@ -158,15 +158,24 @@ def test_path_geometry():
     plan = meta["plan"]
 
     chk.ok(not meta["conflicts"], f"方块冲突 {meta['conflicts'][:3]}")
+    world = world_from_commands(commands)
     for key, nodes in plan["lanes"].items():
         for index in range(1, len(nodes)):
             chk.ok(nodes[index]["x"] - nodes[index - 1]["x"] == STEP,
                    f"{key} tick {nodes[index]['tick']}: x 步长不是 {STEP}")
-            delta = abs(nodes[index]["z_cell"] - nodes[index - 1]["z_cell"])
+            delta = abs(nodes[index]["z"] - nodes[index - 1]["z"])
             chk.ok(delta <= MAX_LATERAL_STEP,
                    f"{key} tick {nodes[index]['tick']}: 横向位移 {delta} > {MAX_LATERAL_STEP}")
+        # 严格 ABAB：R 在中继器位上，B 在 +1 位上是音符盒或空音符实心方块
+        for index, node in enumerate(nodes):
+            relay_z = nodes[index - 1]["z"] if index else node["z"]
+            relay = world.get((node["x"], node["y"], relay_z))
+            chk.ok(relay is not None and relay["id"] == "repeater",
+                   f"{key} tick {node['tick']}: X={node['x']} 不是中继器")
+            body = world.get((node["x"] + 1, node["y"], node["z"]))
+            chk.ok(body is not None and body["id"] in ("note_block", "oak_planks"),
+                   f"{key} tick {node['tick']}: X={node['x'] + 1} 不是音符盒/空音符")
 
-    world = world_from_commands(commands)
     issues = check_structure(world)
     chk.ok(not issues, f"存在悬空/无垫底方块：{issues[:3]}")
 
@@ -304,11 +313,11 @@ def test_lateral_smoothing():
     virtual_layers = [{"vid": 0, "original_id": 0, "side": None,
                        "notes": notes, "inst": 0, "cat": "钢琴"}]
     plan = plan_curve(virtual_layers, {0: 0}, (0, 64, 0), 1, base_config())
-    nodes = plan["lanes"][(0, 1)]
-    chk.ok(abs(nodes[0]["z_cell"]) == MIN_DUAL_DISTANCE - 1,
-           f"满音量事件格 {nodes[0]['z_cell']} != {MIN_DUAL_DISTANCE - 1}")
-    chk.ok(nodes[1]["z_cell"] == nodes[0]["z_cell"] + MAX_LATERAL_STEP,
-           f"横向跳变没有被限制：{nodes[0]['z_cell']} -> {nodes[1]['z_cell']}")
+    nodes = plan["lanes"][("layer", 0, 1)]
+    chk.ok(abs(nodes[0]["z"]) == MIN_DUAL_DISTANCE,
+           f"满音量距离 {nodes[0]['z']} != {MIN_DUAL_DISTANCE}")
+    chk.ok(abs(nodes[1]["z"]) == MIN_DUAL_DISTANCE + MAX_LATERAL_STEP,
+           f"横向跳变没有被限制：{nodes[0]['z']} -> {nodes[1]['z']}")
     chk.ok(plan["smoothed"] >= 1, "没有记录到被平滑的跳变")
     return chk.report("smoothing")
 

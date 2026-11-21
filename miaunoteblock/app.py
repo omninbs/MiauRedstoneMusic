@@ -577,6 +577,16 @@ def build_commands(config: dict, song, virtual_layers: List[dict],
             direction=direction, song=song)
         if meta_out is not None:
             meta_out.update(meta)
+        plan = meta.get("plan") or {}
+        if plan.get("smoothed"):
+            print(Ansi.prompt(
+                f"警告：有 {plan['smoothed']} 处音量跳变超过红石线 15 格限制"
+                f"（约 66.7% 音量变化），已自动平滑；可拉长音符间隔，"
+                f"或安装解除红石线传输距离限制的模组。"))
+        if plan.get("dropped"):
+            print(Ansi.prompt(
+                f"警告：同一音轨同一 tick 有 {plan['dropped']} 个音符挤在一格，"
+                f"已只保留最响的一个。"))
         if config.get("lyrics_import") or (config.get("particles_enabled")
                                            and config.get("particles_layers")):
             print(Ansi.prompt("提示：曲线音量排版暂不支持歌词 / 粒子轨道，本次已跳过。"))

@@ -118,9 +118,10 @@ The curve layout encodes **volume** as the track's distance from the center axis
 **All other tracks**
 - One note block on each side (mirrored about the center axis), each carrying `V/2`: `d = 48 × (1 − V/2)`, so V=100% → 24 blocks, V=0 → 48 blocks.
 - The two sides sum back to the NBS volume, which is why anything within 24 blocks counts as full volume.
-- The track moves 3 blocks along +X per song tick; its lateral position follows the distance, so it **bends like a semicircle**.
+- Tracks are strictly **ABAB**: exactly 2 blocks of X per song tick (1 repeater + 1 note block). Empty ticks use oak planks (conductive but silent).
+- The lateral position follows the distance and is connected by redstone wire in the note-block column, so the track **bends like a semicircle**.
 - Exactly one repeater per tick (2 game ticks). Redstone wire is instantaneous, so bending never changes timing.
-- A single wire run is limited to 15 blocks, so the track moves at most 13 blocks sideways per tick; blank ticks share the movement and sharper jumps are smoothed and reported.
+- A single wire run is limited to 15 blocks (16 including the note block), so the lateral change per tick is capped at 15 blocks. Larger jumps trigger a warning at generation time (about 66.7% volume change) and are smoothed; stretch the notes or install a mod that lifts the wire limit.
 
 **General**
 - Wool sits under every wire, repeater and command block, so nothing pops off. The structure ships with its own start redstone block, so **pasting starts playback automatically**.

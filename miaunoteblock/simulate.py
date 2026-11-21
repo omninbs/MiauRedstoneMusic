@@ -139,10 +139,13 @@ def _varints(data: bytes):
 
 
 def load_schem(path: str) -> Dict[Coord, dict]:
-    """读取 Sponge v2 ``.schem``（mcschematic 保存的格式）。"""
+    """读取 ``.schem``：兼容 WorldEdit v3 与 Sponge v2。"""
     import nbtlib
 
     root = nbtlib.load(path)
+    if "Schematic" in root and "Blocks" in root["Schematic"]:
+        return _load_worldedit(root["Schematic"])
+
     width = int(root["Width"])
     height = int(root["Height"])
     length = int(root["Length"])
@@ -170,9 +173,52 @@ def load_schem(path: str) -> Dict[Coord, dict]:
                     continue
                 world[(x + offset[0], y + offset[1], z + offset[2])] = block
 
-    # 方块实体：命令方块里的 Command 存放在 BlockEntities 里，
-    # 读档时必须合并回去，否则矿车跟随链会“丢失命令”。
     for entity in root.get("BlockEntities") or []:
+        try:
+            position = entity["Pos"]
+            coord = (int(position[0]) + offset[0],
+                     int(position[1]) + offset[1],
+                     int(position[2]) + offset[2])
+        except (KeyError, IndexError, TypeError, ValueError):
+            continue
+        block = world.get(coord)
+        if block is None:
+            continue
+        command = entity.get("Command")
+        if command is not None:
+            block = dict(block)
+            block["nbt"] = "{Command:" + json.dumps(str(command)) + "}"
+            world[coord] = block
+    return world
+
+
+def _load_worldedit(schematic) -> Dict[Coord, dict]:
+    """WorldEdit ``.schem``（根键 Schematic，方块在 Blocks 复合里）。"""
+    width = int(schematic["Width"])
+    height = int(schematic["Height"])
+    length = int(schematic["Length"])
+    blocks_tag = schematic["Blocks"]
+    palette = {int(value): str(key) for key, value in blocks_tag["Palette"].items()}
+    data = bytes(blocks_tag["Data"])
+    offset_tag = schematic.get("Offset") or (0, 0, 0)
+    offset = (int(offset_tag[0]), int(offset_tag[1]), int(offset_tag[2]))
+
+    world: Dict[Coord, dict] = {}
+    ids = _varints(data)
+    for y in range(height):
+        for z in range(length):
+            for x in range(width):
+                try:
+                    palette_id = next(ids)
+                except StopIteration:
+                    break
+                text = palette.get(palette_id, "minecraft:air")
+                block = parse_block(text)
+                if block["id"] in ("air", "cave_air", "void_air"):
+                    continue
+                world[(x + offset[0], y + offset[1], z + offset[2])] = block
+
+    for entity in blocks_tag.get("BlockEntities") or []:
         try:
             position = entity["Pos"]
             coord = (int(position[0]) + offset[0],
@@ -216,6 +262,7 @@ class Simulator:
                 delay = int(block["props"].get("delay", 1) or 1)
                 self.repeaters[position] = {"out": out_dir, "delay": delay}
             elif block_id == "note_block":
+                self.solids.add(position)
                 pitch = int(block["props"].get("note", 0) or 0)
                 below = self.world.get((position[0], position[1] - 1, position[2]))
                 instrument = 0
@@ -235,8 +282,9 @@ class Simulator:
                 self.solids.add(position)
 
         # 可被强充能并继续激活相邻元件的「导体方块」
-        # 音符盒的导电单独用 BFS 处理，中继器/红石线自身不作为导体
-        non_conductors = set(self.repeaters) | set(self.notes) | self.dust
+        # 音符盒会导电（参考结构里中继器正是靠被强充能的音符盒续链），
+        # 中继器/红石线自身不作为导体
+        non_conductors = set(self.repeaters) | self.dust
         self.conductors = self.solids - non_conductors
 
     # ── 红石线连通分量 ─────────────────────────────────────
@@ -346,6 +394,17 @@ class Simulator:
                             level[neighbor] = current - 1
                             queue.append(neighbor)
             dirty.clear()
+
+            # 有电的红石线会强充能相邻的导体方块（参考结构靠这一点续链：
+            # 红石线末端紧贴的音符盒/空音符方块被强充能，给下一个中继器输入）
+            for cell, value in level.items():
+                if value <= 0:
+                    continue
+                for delta in ((1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1)):
+                    neighbor = (cell[0] + delta[0], cell[1] + delta[1],
+                                cell[2] + delta[2])
+                    if neighbor in self.conductors:
+                        powered.add(neighbor)
 
             # 音符盒激活（含音符盒之间的导电传播）
             seeds = set()
