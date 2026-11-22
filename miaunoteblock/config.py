@@ -28,13 +28,22 @@ DEFAULT_CONFIG = {
     # ── 音量控制排版（layout_style = "curve"）──────────────────
     "curve_lane_spacing": 3,          # 普通车道之间的垂直间距（格）
     "curve_minecart": True,           # 生成隐形矿车跟随玩家的命令方块链
-    "curve_sound_range": 48.0,        # 音符盒可听半径（音量公式的分母）
     "curve_master_layers": [],        # 主音轨（原始音轨 id，固定满音量、放中心轴上）
     "curve_master_spacing": 3,        # 主音轨之间的垂直间距（格）
     "curve_corridor_height": 2,       # 玩家走廊高度（格）
+    "curve_master_lamp": False,       # 主音轨空音符换成红石灯
+    "curve_trim_silent": False,       # 实验性：删除开头/结尾长时间无音符的轨道段
+    "curve_trim_seconds": 1.0,        # 静音裁剪阈值（秒，按歌曲速度换算成 tick）
+    "curve_dual_track": False,        # 实验性：音量跨度大时并行生成副音轨
+    "curve_dual_spacing": 6,          # 副音轨在主音轨外侧的固定间距（格）
+    "curve_command_side": "right",    # 命令方块链方位：left / right / up / down
     # ── 方块自定义 ───────────────────────────────────────────
     "empty_block": "minecraft:oak_planks",   # 空 tick 占位方块（导电、不发声）
     "support_block": "minecraft:white_wool",  # 结构支撑方块（垫在红石线/中继器/命令方块下）
+    "lane_block_left": "",            # 左声道空音符方块（空 = 跟随 empty_block）
+    "lane_block_right": "",           # 右声道空音符方块（空 = 跟随 empty_block）
+    "lane_support_left": "",          # 左声道支撑方块（空 = 跟随 support_block）
+    "lane_support_right": "",         # 右声道支撑方块（空 = 跟随 support_block）
     "group_offsets": {},              # 手动微调的轨道起始位置：{"组号": {"y": 0, "side": -3}}
     "layer_groups": [],               # 音轨分组的持久化：[[vid, vid], [vid], ...]
     "mc_assets_dir": r"D:\MC游戏目录\MC\assets",  # Minecraft 资源目录（用于网页 3D 纹理）

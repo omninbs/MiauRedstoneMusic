@@ -388,3 +388,5 @@ MiauParticleEffects 提供 `/mpe` 入口，并将文字渲染为基于粒子的�
 <br />
 <sub>为 Minecraft Java 红石音乐社区而构建。</sub>
 </div>
+
+~小声说话：我根本就没用gpt、cluade，因为用不起，我都是用小米MIMO和deepseek垃圾模型喵呜~

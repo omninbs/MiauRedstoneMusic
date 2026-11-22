@@ -250,36 +250,142 @@
       <div class="step-head">
         <span class="kicker">STEP 04 · 材质</span>
         <h2 id="step4-title">自定义方块</h2>
-        <p class="lede">空 tick 需要一个「导电但不发声」的方块占位，红石线、中继器与命令方块下面需要一层支撑方块。两者都可以换成你喜欢的材质。</p>
+        <p class="lede">空 tick 需要一个「导电但不发声」的方块占位，中继器与红石线下面需要一层支撑方块。点击卡片即可从分类浮层里挑选，功能性方块（会被红石激活）已被排除。</p>
       </div>
 
-      <div class="block-pickers">
+      <div class="block-group">
+        <div class="block-group-head">
+          <span class="kicker">全局默认</span>
+          <h3>所有音轨使用的方块</h3>
+          <p>没有单独指定左右声道时，都使用这里的两个方块。</p>
+        </div>
+        <div class="block-pickers">
         <div class="card block-picker">
           <div class="picker-preview" id="preview-empty"><span class="picker-loading">纹理</span></div>
           <div class="picker-body">
             <span class="kicker">空音符占位</span>
             <h3>空 tick 方块</h3>
-            <p>必须能被红石信号充能，且自身不发声。默认是橡木木板，也可以直接填模组方块。</p>
-            <input class="input input-mono" id="input-empty-block" type="text" spellcheck="false" placeholder="minecraft:oak_planks" autocomplete="off" />
+            <p>必须能被红石信号充能，且自身不发声。默认橡木木板。</p>
+            <button class="block-trigger" type="button" data-block-key="empty_block" aria-haspopup="dialog">
+              <span class="block-trigger-icon"><img alt="" /></span>
+              <span class="block-trigger-text">
+                <strong data-block-name>橡木木板</strong>
+                <code data-block-id>minecraft:oak_planks</code>
+              </span>
+              <span class="block-trigger-caret" aria-hidden="true">▾</span>
+            </button>
             <div class="picker-status" id="status-empty"></div>
-            <div class="block-gallery" id="gallery-empty"></div>
           </div>
         </div>
-
         <div class="card block-picker">
           <div class="picker-preview" id="preview-support"><span class="picker-loading">纹理</span></div>
           <div class="picker-body">
             <span class="kicker">结构支撑</span>
             <h3>支撑方块</h3>
-            <p>垫在中继器、空 tick 方块和沙砾下方，避免粘贴后掉落。默认是白色羊毛。</p>
-            <input class="input input-mono" id="input-support-block" type="text" spellcheck="false" placeholder="minecraft:white_wool" autocomplete="off" />
+            <p>垫在中继器、空 tick 方块与红石线下方，避免粘贴后掉落。</p>
+            <button class="block-trigger" type="button" data-block-key="support_block" aria-haspopup="dialog">
+              <span class="block-trigger-icon"><img alt="" /></span>
+              <span class="block-trigger-text">
+                <strong data-block-name>白色羊毛</strong>
+                <code data-block-id>minecraft:white_wool</code>
+              </span>
+              <span class="block-trigger-caret" aria-hidden="true">▾</span>
+            </button>
             <div class="picker-status" id="status-support"></div>
-            <div class="block-gallery" id="gallery-support"></div>
           </div>
+        </div>
         </div>
       </div>
 
-      <p class="field-hint">方框内可输入任意 <code>命名空间:方块ID</code>（支持模组方块）。ID 合法且能在原版资源里找到纹理时会显示真实方块，否则使用稳定的纯色占位，不影响生成结果。</p>
+      <div class="block-group">
+        <div class="block-group-head">
+          <span class="kicker">左右声道覆盖</span>
+          <h3>给左右音轨分别换材质</h3>
+          <p>留空 = 跟随上面的全局默认。副音轨、桥接与空音符下方的支撑，都会按所在侧取用。</p>
+        </div>
+        <div class="block-pickers">
+        <div class="card block-picker">
+          <div class="picker-preview" id="preview-lane-left"><span class="picker-loading">纹理</span></div>
+          <div class="picker-body">
+            <span class="kicker">左声道 · 空音符</span>
+            <h3>左音轨空音符方块</h3>
+            <p>留空跟随「空 tick 方块」。</p>
+            <button class="block-trigger" type="button" data-block-key="lane_block_left" aria-haspopup="dialog">
+              <span class="block-trigger-icon"><img alt="" /></span>
+              <span class="block-trigger-text">
+                <strong data-block-name>跟随空 tick 方块</strong>
+                <code data-block-id>—</code>
+              </span>
+              <span class="block-trigger-caret" aria-hidden="true">▾</span>
+            </button>
+            <div class="picker-status" id="status-lane-left"></div>
+          </div>
+        </div>
+        <div class="card block-picker">
+          <div class="picker-preview" id="preview-support-left"><span class="picker-loading">纹理</span></div>
+          <div class="picker-body">
+            <span class="kicker">左声道 · 支撑</span>
+            <h3>左音轨支撑方块</h3>
+            <p>留空跟随「支撑方块」。</p>
+            <button class="block-trigger" type="button" data-block-key="lane_support_left" aria-haspopup="dialog">
+              <span class="block-trigger-icon"><img alt="" /></span>
+              <span class="block-trigger-text">
+                <strong data-block-name>跟随支撑方块</strong>
+                <code data-block-id>—</code>
+              </span>
+              <span class="block-trigger-caret" aria-hidden="true">▾</span>
+            </button>
+            <div class="picker-status" id="status-support-left"></div>
+          </div>
+        </div>
+        <div class="card block-picker">
+          <div class="picker-preview" id="preview-lane-right"><span class="picker-loading">纹理</span></div>
+          <div class="picker-body">
+            <span class="kicker">右声道 · 空音符</span>
+            <h3>右音轨空音符方块</h3>
+            <p>留空跟随「空 tick 方块」。</p>
+            <button class="block-trigger" type="button" data-block-key="lane_block_right" aria-haspopup="dialog">
+              <span class="block-trigger-icon"><img alt="" /></span>
+              <span class="block-trigger-text">
+                <strong data-block-name>跟随空 tick 方块</strong>
+                <code data-block-id>—</code>
+              </span>
+              <span class="block-trigger-caret" aria-hidden="true">▾</span>
+            </button>
+            <div class="picker-status" id="status-lane-right"></div>
+          </div>
+        </div>
+        <div class="card block-picker">
+          <div class="picker-preview" id="preview-support-right"><span class="picker-loading">纹理</span></div>
+          <div class="picker-body">
+            <span class="kicker">右声道 · 支撑</span>
+            <h3>右音轨支撑方块</h3>
+            <p>留空跟随「支撑方块」。</p>
+            <button class="block-trigger" type="button" data-block-key="lane_support_right" aria-haspopup="dialog">
+              <span class="block-trigger-icon"><img alt="" /></span>
+              <span class="block-trigger-text">
+                <strong data-block-name>跟随支撑方块</strong>
+                <code data-block-id>—</code>
+              </span>
+              <span class="block-trigger-caret" aria-hidden="true">▾</span>
+            </button>
+            <div class="picker-status" id="status-support-right"></div>
+          </div>
+        </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <h3>主音轨空音符</h3>
+            <p>把主音轨（音量控制排版）里的空 tick 方块换成红石灯，被中继器强充能时会亮起，形成节奏指示灯。</p>
+          </div>
+          <label class="switch"><input type="checkbox" id="toggle-master-lamp" /><span></span></label>
+        </div>
+      </div>
+
+      <p class="field-hint">点击方块卡片打开分类选择浮层；只能选<strong>不会被红石激活</strong>的结构方块。模组方块可直接在浮层底部输入 <code>命名空间:方块ID</code>。找不到原版纹理时使用稳定纯色占位，不影响生成结果。</p>
 
       <div class="step-foot">
         <button class="btn btn-ghost" data-goto="3" type="button">上一步</button>

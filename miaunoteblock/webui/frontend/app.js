@@ -127,6 +127,7 @@
   }
 
   function go(n) {
+    if (typeof closePicker === 'function') closePicker();
     if (n > 1 && !songLoaded()) {
       toast('请先载入一首 NBS 歌曲', 'error');
       return;
@@ -480,6 +481,35 @@
           (state.config.curve_minecart ? ' checked' : '') + ' /><span></span></label></div>');
         return;
       }
+      if (key === 'curve_trim_silent') {
+        html.push(
+          '<div class="param param-toggle"><div><span class="param-name">实验性 · 静音裁剪</span>' +
+          '<p>删除开头/中间/结尾超过阈值的空音轨段；开头与中间用线路桥在正确时刻唤醒。</p></div>' +
+          '<label class="switch"><input type="checkbox" data-toggle="curve_trim_silent"' +
+          (state.config.curve_trim_silent ? ' checked' : '') + ' /><span></span></label></div>');
+        return;
+      }
+      if (key === 'curve_dual_track') {
+        html.push(
+          '<div class="param param-toggle"><div><span class="param-name">实验性 · 双轨音量</span>' +
+          '<p>按音量公式算出直线距离；当高低音量的距离差超过 16 格（红石线 15 格 + 音符盒 1 格的物理极限）时，同侧外扩生成副音轨。</p></div>' +
+          '<label class="switch"><input type="checkbox" data-toggle="curve_dual_track"' +
+          (state.config.curve_dual_track ? ' checked' : '') + ' /><span></span></label></div>');
+        return;
+      }
+      if (key === 'curve_command_side') {
+        const sides = [['right', '右'], ['left', '左'], ['up', '上'], ['down', '下']];
+        const options = sides.map(([value, name]) =>
+          '<option value="' + value + '"' +
+          (state.config.curve_command_side === value ? ' selected' : '') +
+          '>' + name + '侧</option>');
+        html.push(
+          '<div class="param"><div class="param-head"><span class="param-name">命令方块链方位</span>' +
+          '<span class="param-value">尽量在 48 格外</span></div>' +
+          '<select class="input" data-select-text="curve_command_side">' +
+          options.join('') + '</select></div>');
+        return;
+      }
       if (key === 'master_group') {
         const options = ['<option value="">无核心组</option>'].concat(
           state.groups.map((group) => '<option value="' + group.gid + '"' +
@@ -494,7 +524,7 @@
       const spec = state.paramSpecs[key];
       if (!spec) return;
       const value = state.config[key];
-      const step = spec.type === 'float' ? 1 : 1;
+      const step = spec.type === 'float' ? 0.1 : 1;
       html.push(
         '<div class="param"><div class="param-head">' +
         '<span class="param-name">' + spec.label + '</span>' +
@@ -524,6 +554,11 @@
       select.addEventListener('change', () => {
         const value = select.value === '' ? null : Number(select.value);
         patchConfig({ [select.dataset.select]: value });
+      });
+    });
+    $$('#param-grid [data-select-text]').forEach((select) => {
+      select.addEventListener('change', () => {
+        patchConfig({ [select.dataset.selectText]: select.value });
       });
     });
   }
@@ -685,20 +720,67 @@
   }
 
   // ── 方块 ─────────────────────────────────────────────────
+  const BLOCK_KEYS = {
+    empty_block: {
+      preview: '#preview-empty', status: 'empty',
+      label: '空 tick 方块', fallback: '跟随空 tick 方块',
+    },
+    support_block: {
+      preview: '#preview-support', status: 'support',
+      label: '支撑方块', fallback: '跟随支撑方块',
+    },
+    lane_block_left: {
+      preview: '#preview-lane-left', status: 'lane-left',
+      label: '左音轨空音符方块', fallback: '跟随空 tick 方块',
+    },
+    lane_support_left: {
+      preview: '#preview-support-left', status: 'support-left',
+      label: '左音轨支撑方块', fallback: '跟随支撑方块',
+    },
+    lane_block_right: {
+      preview: '#preview-lane-right', status: 'lane-right',
+      label: '右音轨空音符方块', fallback: '跟随空 tick 方块',
+    },
+    lane_support_right: {
+      preview: '#preview-support-right', status: 'support-right',
+      label: '右音轨支撑方块', fallback: '跟随支撑方块',
+    },
+  };
+
+  function blockDisplayName(block) {
+    const gallery = (app.state && app.state.blockGallery) || [];
+    for (let i = 0; i < gallery.length; i++) {
+      const found = gallery[i].blocks.find((item) => item.id === block);
+      if (found) return found.name;
+    }
+    return String(block).split(':').pop().replace(/_/g, ' ');
+  }
+
   function renderBlocks() {
     if (!app.state) return;
     const config = app.state.config;
-    const emptyInput = $('#input-empty-block');
-    const supportInput = $('#input-support-block');
-    if (document.activeElement !== emptyInput) emptyInput.value = config.empty_block;
-    if (document.activeElement !== supportInput) supportInput.value = config.support_block;
-    setPickerPreview('#preview-empty', config.empty_block);
-    setPickerPreview('#preview-support', config.support_block);
-    checkBlockInfo('empty', config.empty_block);
-    checkBlockInfo('support', config.support_block);
-
-    renderGallery('#gallery-empty', emptyInput);
-    renderGallery('#gallery-support', supportInput);
+    const fallbackOf = (key) => (key.indexOf('support') >= 0
+      ? config.support_block : config.empty_block);
+    $$('[data-block-key]').forEach((trigger) => {
+      const key = trigger.dataset.blockKey;
+      const meta = BLOCK_KEYS[key] || {};
+      const value = config[key] || '';
+      const nameEl = $('[data-block-name]', trigger);
+      const idEl = $('[data-block-id]', trigger);
+      if (nameEl) nameEl.textContent = value ? blockDisplayName(value)
+        : (meta.fallback || '跟随默认方块');
+      if (idEl) idEl.textContent = value || '—';
+      const icon = $('.block-trigger-icon img', trigger);
+      if (icon) applyTexture(icon, value || fallbackOf(key));
+    });
+    Object.keys(BLOCK_KEYS).forEach((key) => {
+      const meta = BLOCK_KEYS[key];
+      const value = config[key] || '';
+      setPickerPreview(meta.preview, value || fallbackOf(key));
+      checkBlockInfo(meta.status, value);
+    });
+    const lamp = $('#toggle-master-lamp');
+    if (lamp) lamp.checked = !!config.curve_master_lamp;
   }
 
   function setPickerPreview(selector, block) {
@@ -711,42 +793,201 @@
       image.alt = '';
       host.appendChild(image);
     }
-    textureSrc(block).then((url) => { image.src = url; }).catch(() => {});
+    applyTexture(image, block);
   }
 
-  function renderGallery(selector, input) {
-    const host = $(selector);
-    if (!host || !app.state) return;
-    if (host.dataset.ready !== '1') {
-      const gallery = app.state.blockGallery || [];
-      host.innerHTML = gallery.map((group) => (
-        '<div class="gallery-group">' +
-        '<span class="gallery-title">' + escapeHtml(group.name) + '</span>' +
-        '<div class="gallery-grid">' +
-        group.blocks.map((item) => (
-          '<button class="gallery-item" type="button" data-block="' + item.id + '" ' +
-          'title="' + item.id + '">' +
-          '<img alt="" loading="lazy" />' +
-          '<span>' + escapeHtml(item.name) + '</span>' +
-          '</button>'
-        )).join('') +
-        '</div></div>'
-      )).join('');
-      host.dataset.ready = '1';
-      host.addEventListener('click', (event) => {
-        const button = event.target.closest('[data-block]');
-        if (!button) return;
-        input.value = button.dataset.block;
-        submitBlockInput(input);
-      });
-      $$('.gallery-item', host).forEach((item) => {
-        const image = $('img', item);
-        textureSrc(item.dataset.block).then((url) => { image.src = url; }).catch(() => {});
-      });
-    }
-    $$('.gallery-item', host).forEach((item) => {
-      item.classList.toggle('is-active', item.dataset.block === input.value.trim());
+  // 浮层选择器：一次只打开一个，内容与图标彼此独立，避免互相串改
+  const picker = { node: null, key: null, trigger: null, category: 'all', query: '' };
+
+  function ensurePicker() {
+    if (picker.node) return picker.node;
+    const node = document.createElement('div');
+    node.className = 'block-popover';
+    node.setAttribute('role', 'dialog');
+    node.setAttribute('aria-label', '选择方块');
+    node.hidden = true;
+    node.innerHTML =
+      '<div class="bp-head">' +
+        '<div class="bp-title"><span class="kicker">选择方块</span><strong data-bp-title>空 tick 方块</strong></div>' +
+        '<label class="bp-search"><span aria-hidden="true">⌕</span>' +
+        '<input type="search" placeholder="搜索名称或 ID" data-bp-search autocomplete="off" /></label>' +
+        '<button class="bp-close" type="button" data-bp-close aria-label="关闭">×</button>' +
+      '</div>' +
+      '<div class="bp-body">' +
+        '<nav class="bp-cats" data-bp-cats></nav>' +
+        '<div class="bp-grid-wrap">' +
+          '<div class="bp-grid" data-bp-grid></div>' +
+          '<p class="bp-empty" data-bp-empty hidden>没有匹配的方块</p>' +
+        '</div>' +
+      '</div>' +
+      '<div class="bp-foot">' +
+        '<label class="bp-manual"><span>模组方块 ID</span>' +
+        '<input class="input input-mono" type="text" spellcheck="false" placeholder="namespace:block_id" data-bp-input /></label>' +
+        '<button class="btn btn-ghost btn-sm" type="button" data-bp-reset hidden>跟随空 tick 方块</button>' +
+        '<button class="btn btn-primary btn-sm" type="button" data-bp-apply>应用</button>' +
+      '</div>';
+    document.body.appendChild(node);
+    $('[data-bp-close]', node).addEventListener('click', closePicker);
+    $('[data-bp-search]', node).addEventListener('input', (event) => {
+      picker.query = event.target.value.trim().toLowerCase();
+      renderPickerBody();
     });
+    $('[data-bp-cats]', node).addEventListener('click', (event) => {
+      const chip = event.target.closest('[data-cat]');
+      if (!chip) return;
+      picker.category = chip.dataset.cat;
+      renderPickerBody();
+    });
+    $('[data-bp-grid]', node).addEventListener('click', (event) => {
+      const tile = event.target.closest('[data-block]');
+      if (!tile) return;
+      commitBlock(tile.dataset.block);
+    });
+    $('[data-bp-apply]', node).addEventListener('click', () => {
+      const value = $('[data-bp-input]', node).value.trim();
+      if (value) commitBlock(value);
+    });
+    $('[data-bp-input]', node).addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      const value = event.target.value.trim();
+      if (value) commitBlock(value);
+    });
+    $('[data-bp-reset]', node).addEventListener('click', () => commitBlock(''));
+    picker.node = node;
+    return node;
+  }
+
+  function openPicker(key, trigger) {
+    const node = ensurePicker();
+    if (picker.trigger && picker.trigger !== trigger) {
+      picker.trigger.setAttribute('aria-expanded', 'false');
+    }
+    picker.key = key;
+    picker.trigger = trigger;
+    picker.category = 'all';
+    picker.query = '';
+    const meta = BLOCK_KEYS[key] || {};
+    $('[data-bp-title]', node).textContent = meta.label || '选择方块';
+    $('[data-bp-search]', node).value = '';
+    $('[data-bp-input]', node).value = (app.state && app.state.config[key]) || '';
+    const resetButton = $('[data-bp-reset]', node);
+    resetButton.hidden = key.indexOf('lane_') !== 0;
+    resetButton.textContent = key.indexOf('support') >= 0
+      ? '跟随支撑方块' : '跟随空 tick 方块';
+    node.hidden = false;
+    if (trigger) trigger.setAttribute('aria-expanded', 'true');
+    positionPicker(trigger);
+    renderPickerBody();
+    requestAnimationFrame(() => node.classList.add('is-open'));
+    setTimeout(() => $('[data-bp-search]', node).focus(), 30);
+  }
+
+  function closePicker() {
+    const node = picker.node;
+    if (!node) return;
+    if (picker.trigger) picker.trigger.setAttribute('aria-expanded', 'false');
+    node.classList.remove('is-open');
+    setTimeout(() => {
+      if (!node.classList.contains('is-open')) node.hidden = true;
+    }, 130);
+    picker.key = null;
+  }
+
+  function positionPicker(trigger) {
+    const node = picker.node;
+    if (!node || !trigger) return;
+    const rect = trigger.getBoundingClientRect();
+    const width = Math.min(580, window.innerWidth - 24);
+    const height = Math.min(470, window.innerHeight - 24);
+    let left = rect.left;
+    if (left + width > window.innerWidth - 12) left = window.innerWidth - width - 12;
+    left = Math.max(12, left);
+    const below = window.innerHeight - rect.bottom;
+    let top;
+    if (below < 300 && rect.top > below) {
+      top = rect.top - height - 10;
+      node.dataset.side = 'up';
+    } else {
+      top = rect.bottom + 10;
+      node.dataset.side = 'down';
+    }
+    top = Math.max(12, Math.min(top, window.innerHeight - height - 12));
+    node.style.width = width + 'px';
+    node.style.maxHeight = height + 'px';
+    node.style.left = left + 'px';
+    node.style.top = top + 'px';
+  }
+
+  function renderPickerBody() {
+    const node = picker.node;
+    if (!node || !app.state) return;
+    const gallery = app.state.blockGallery || [];
+    const total = gallery.reduce((sum, group) => sum + group.blocks.length, 0);
+    const chips = ['<button class="bp-cat" type="button" data-cat="all">全部 <em>' + total + '</em></button>']
+      .concat(gallery.map((group) => (
+        '<button class="bp-cat" type="button" data-cat="' + group.id + '">' +
+        escapeHtml(group.name) + ' <em>' + group.blocks.length + '</em></button>'
+      )));
+    const cats = $('[data-bp-cats]', node);
+    cats.innerHTML = chips.join('');
+    $$('.bp-cat', cats).forEach((chip) => {
+      chip.classList.toggle('is-active', chip.dataset.cat === picker.category);
+    });
+
+    const query = picker.query;
+    const sections = gallery
+      .filter((group) => picker.category === 'all' || group.id === picker.category)
+      .map((group) => ({
+        group,
+        blocks: group.blocks.filter((item) => !query
+          || item.name.toLowerCase().indexOf(query) >= 0
+          || item.id.toLowerCase().indexOf(query) >= 0),
+      }))
+      .filter((entry) => entry.blocks.length);
+
+    const active = (app.state.config[picker.key] || '').trim();
+    const grid = $('[data-bp-grid]', node);
+    grid.innerHTML = sections.map((entry) => (
+      '<section class="bp-group"><h4>' + escapeHtml(entry.group.name) +
+      '<span>' + entry.blocks.length + '</span></h4><div class="bp-tiles">' +
+      entry.blocks.map((item) => (
+        '<button class="bp-tile' + (item.id === active ? ' is-active' : '') +
+        '" type="button" data-block="' + item.id + '" title="' + item.id + '">' +
+        '<img alt="" loading="lazy" /><span>' + escapeHtml(item.name) + '</span></button>'
+      )).join('') + '</div></section>'
+    )).join('');
+    $$('.bp-tile', grid).forEach((tile) => {
+      const image = $('img', tile);
+      applyTexture(image, tile.dataset.block);
+    });
+    $('[data-bp-empty]', node).hidden = sections.length > 0;
+  }
+
+  async function commitBlock(value) {
+    const key = picker.key;
+    if (!key) return;
+    if (value) {
+      const info = await fetchBlockInfo(value);
+      if (!info || !info.valid) {
+        toast('方块 ID 格式不正确：' + value, 'error');
+        return;
+      }
+      if (info.functional) {
+        toast(info.name + ' 会被红石激活，不能作为结构方块', 'error');
+        return;
+      }
+    }
+    try {
+      const data = await api('/api/config', { body: { patch: { [key]: value } } });
+      app.dirty = true;
+      applyState(data.state);
+      toast(value ? '方块已更新为 ' + blockDisplayName(value) : '已恢复跟随空 tick 方块', 'ok');
+      closePicker();
+      if (app.step === 5 || app.step === 6) schedulePreviewReload();
+    } catch (err) {
+      toast(err.message, 'error');
+    }
   }
 
   async function fetchBlockInfo(block) {
@@ -764,6 +1005,11 @@
     const host = $('#status-' + which);
     if (!host) return;
     host.className = 'picker-status';
+    if (!block) {
+      host.classList.add('is-ok');
+      host.textContent = '跟随「空 tick 方块」';
+      return;
+    }
     host.textContent = '正在检查方块 ID…';
     const info = await fetchBlockInfo(block);
     if (!info) {
@@ -775,6 +1021,11 @@
       host.textContent = 'ID 格式不正确，应为 命名空间:方块ID（如 minecraft:stone）';
       return;
     }
+    if (info.functional) {
+      host.className = 'picker-status is-bad';
+      host.textContent = '✕ ' + info.name + ' 会被红石激活，不能用作结构方块';
+      return;
+    }
     if (info.hasTexture) {
       host.className = 'picker-status is-ok';
       host.textContent = '✓ ' + info.name + ' · 已找到原版纹理';
@@ -784,40 +1035,37 @@
     }
   }
 
-  async function submitBlockInput(input) {
-    const key = input.id === 'input-empty-block' ? 'empty_block' : 'support_block';
-    const value = input.value.trim();
-    if (!value) return;
-    const info = await fetchBlockInfo(value);
-    if (info && !info.valid) {
-      toast('方块 ID 格式不正确：' + value, 'error');
-      renderBlocks();
-      return;
-    }
-    try {
-      const data = await api('/api/config', { body: { patch: { [key]: value } } });
-      app.dirty = true;
-      applyState(data.state);
-      toast('方块已更新为 ' + data.state.config[key], 'ok');
-      if (app.step === 5 || app.step === 6) schedulePreviewReload();
-    } catch (err) {
-      toast(err.message, 'error');
-      renderBlocks();
-    }
-  }
-
-  function bindBlockInputs() {
-    ['#input-empty-block', '#input-support-block'].forEach((selector) => {
-      const input = $(selector);
-      input.addEventListener('change', () => submitBlockInput(input));
-      input.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter') submitBlockInput(input);
-      });
-      input.addEventListener('blur', () => {
-        const value = input.value.trim();
-        if (value) checkBlockInfo(selector === '#input-empty-block' ? 'empty' : 'support', value);
+  function bindBlockPickers() {
+    $$('[data-block-key]').forEach((trigger) => {
+      trigger.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const key = trigger.dataset.blockKey;
+        if (picker.key === key) {
+          closePicker();
+          return;
+        }
+        openPicker(key, trigger);
       });
     });
+    document.addEventListener('click', (event) => {
+      if (!picker.node || picker.node.hidden) return;
+      if (picker.node.contains(event.target)) return;
+      if (event.target.closest && event.target.closest('[data-block-key]')) return;
+      closePicker();
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && picker.node && !picker.node.hidden) closePicker();
+    });
+    document.addEventListener('scroll', () => {
+      if (picker.node && !picker.node.hidden && picker.trigger) positionPicker(picker.trigger);
+    }, true);
+    window.addEventListener('resize', () => {
+      if (picker.node && !picker.node.hidden && picker.trigger) positionPicker(picker.trigger);
+    });
+    const lamp = $('#toggle-master-lamp');
+    if (lamp) {
+      lamp.addEventListener('change', () => patchConfig({ curve_master_lamp: lamp.checked }));
+    }
   }
 
   // ── 预览 ─────────────────────────────────────────────────
@@ -1302,7 +1550,7 @@
   // ── 绑定 ─────────────────────────────────────────────────
   function bindStatic() {
     bindPreviewControls();
-    bindBlockInputs();
+    bindBlockPickers();
     bindParticleControls();
     $('#btn-load-song').addEventListener('click', () => loadSong($('#song-path').value.trim()));
     $('#song-path').addEventListener('keydown', (event) => {

@@ -17,8 +17,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .assets import TextureLibrary
-from .service import (MAX_BODY_BYTES, Session, is_valid_block_id,
-                      pretty_block_name)
+from .service import (MAX_BODY_BYTES, Session, is_functional_block,
+                      is_valid_block_id, pretty_block_name)
 
 FRONTEND_DIR = Path(__file__).with_name("frontend")
 STATIC_TYPES = {
@@ -168,6 +168,7 @@ class Handler(BaseHTTPRequestHandler):
                     "valid": valid,
                     "hasTexture": bool(valid and self.server.textures.has_texture(block)),
                     "name": pretty_block_name(block) if valid else block,
+                    "functional": bool(valid and is_functional_block(block)),
                 }})
             else:
                 self._error(HTTPStatus.NOT_FOUND, "没有这个接口")
@@ -271,6 +272,8 @@ def _pick_dialog(kind: str) -> str:
             "filetypes=[('Note Block Studio','*.nbs'),('所有文件','*.*')])"
         )
     code = (
+        "import sys\n"
+        "sys.stdout.reconfigure(encoding='utf-8')\n"
         "import tkinter as tk\n"
         "from tkinter import filedialog\n"
         "r=tk.Tk(); r.withdraw(); r.attributes('-topmost', True); r.update()\n"

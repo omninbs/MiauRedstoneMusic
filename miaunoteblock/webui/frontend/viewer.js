@@ -146,10 +146,19 @@
 
   function shapeOf(block) {
     const id = String(block).split('[')[0];
-    if (id === 'minecraft:redstone_wire') return { y: 0.9375, h: 0.0625 };
+    if (id === 'minecraft:redstone_wire') return { y: 0.9, h: 0.1 };
     if (id.indexOf('repeater') >= 0) return { y: 0.875, h: 0.125 };
     if (id.indexOf('comparator') >= 0) return { y: 0.875, h: 0.125 };
     if (/_button$/.test(id)) return { y: 0, h: 0.25, shrink: 0.3 };
+    if (/_slab$/.test(id)) return { y: 0, h: 0.5 };
+    if (/_carpet$/.test(id)) return { y: 0, h: 0.0625 };
+    if (/_pressure_plate$/.test(id)) return { y: 0, h: 0.0625 };
+    if (/_trapdoor$/.test(id)) return { y: 0.8125, h: 0.1875, shrink: 0.1 };
+    if (/_stairs$/.test(id)) return { y: 0, h: 1 };
+    if (id === 'minecraft:snow' || id === 'minecraft:snow_layer') return { y: 0, h: 0.125 };
+    if (id === 'minecraft:lantern' || id === 'minecraft:soul_lantern') {
+      return { y: 0, h: 0.5, shrink: 0.25 };
+    }
     if (id === 'minecraft:redstone_torch' || id === 'minecraft:torch' ||
         id === 'minecraft:wall_torch') return { y: 0, h: 0.6, shrink: 0.34 };
     return { y: 0, h: 1, shrink: 0 };
@@ -385,16 +394,31 @@
       const ctx = this.atlasCtx;
       const tasks = palette.map((key, index) => {
         const cached = bitmapCache.get(key);
+        const col = index % COLS;
+        const row = Math.floor(index / COLS);
+        // 红石粉在资源里是灰色细线纹理，直接铺在 0.1 高的平面上几乎看不见。
+        // 这里改成「纯红平面」：一条红色主线 + 略暗的边框，稳定可辨。
+        if (key.indexOf('redstone_wire') >= 0) {
+          ctx.imageSmoothingEnabled = false;
+          ctx.fillStyle = '#c62c26';
+          ctx.fillRect(col * TILE, row * TILE, TILE, TILE);
+          ctx.fillStyle = '#8f1e1a';
+          ctx.fillRect(col * TILE, row * TILE, TILE, 2);
+          ctx.fillRect(col * TILE, row * TILE + TILE - 2, TILE, 2);
+          ctx.fillRect(col * TILE, row * TILE, 2, TILE);
+          ctx.fillRect(col * TILE + TILE - 2, row * TILE, 2, TILE);
+          ctx.fillStyle = '#e8504a';
+          ctx.fillRect(col * TILE + 4, row * TILE + 4, TILE - 8, TILE - 8);
+          return Promise.resolve(null);
+        }
         const draw = (bitmap) => {
           ctx.imageSmoothingEnabled = false;
-          const col = index % COLS;
-          const row = Math.floor(index / COLS);
           // 动画纹理是竖排帧，只取第一帧的方形区域
           const src = Math.min(bitmap.width, bitmap.height) || 16;
           try {
             ctx.drawImage(bitmap, 0, 0, src, src,
               col * TILE, row * TILE, TILE, TILE);
-            // 我的世界里的红石粉是红色，但资源里是灰色线纹理：预览里统一染红
+            // 红石火把 / 红石块等灰色资源统一染红
             if (key.indexOf('redstone') >= 0) {
               ctx.globalCompositeOperation = 'source-atop';
               ctx.fillStyle = 'rgba(214, 44, 38, 0.92)';

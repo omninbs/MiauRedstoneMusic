@@ -71,6 +71,75 @@ def _format_options(config: dict) -> str:
     return " ".join(opts)
 
 
+def build_curve_particle_commands(
+    plan: dict,
+    config: dict,
+    base: Tuple[int, int, int],
+    rng: Optional[random.Random] = None,
+) -> Tuple[List[str], Dict[str, Tuple[int, int, int]]]:
+    """音量控制排版也能生成粒子数据。
+
+    特效模组只关心「时间 + 坐标」，与音轨属于哪条红石链无关。
+    这里直接取每条选中分组左侧车道的音符位置，用**绝对延迟**
+    （2 游戏 tick / 歌曲 tick）驱动，因此裁剪过的轨道也能正确对齐。
+
+    返回 (setblock 命令列表, {粒子命令方块名: 激活红石块坐标})。
+    """
+    if rng is None:
+        rng = random.Random()
+    selected = set()
+    for value in (config.get("particles_layers") or []):
+        try:
+            selected.add(int(value))
+        except (TypeError, ValueError):
+            continue
+    if not selected:
+        return [], {}
+
+    base_x, base_y, base_z = base
+    by_group: Dict[Tuple, List[Tuple[int, Tuple[int, int, int]]]] = {}
+    for entry in plan.get("notes", []):
+        vid = entry.get("vid")
+        if vid not in selected or entry.get("aux"):
+            continue
+        # 每个分组只取左侧车道，避免左右重复
+        if entry.get("side", 0) > 0:
+            continue
+        gid = entry.get("gid")
+        key = gid if gid is not None else ("master", vid)
+        by_group.setdefault(key, []).append((entry["tick"], entry["pos"]))
+
+    commands: List[str] = []
+    activations: Dict[str, Tuple[int, int, int]] = {}
+    for index, key in enumerate(sorted(by_group, key=str)):
+        notes = sorted(by_group[key], key=lambda item: item[0])
+        picked = []
+        last_tick = None
+        for tick, position in notes:
+            if tick == last_tick:
+                continue
+            picked.append((tick, position))
+            last_tick = tick
+        if not picked:
+            continue
+        # 粒子命令方块放在走廊下方、结构前方，互不重叠
+        px = base_x - 1 - 2 * index
+        py = base_y - 2
+        pz = base_z
+        parts = []
+        for tick, (x, y, z) in picked:
+            delay = 2 * tick + 1
+            parts.append(f"{x - px},{y - py},{z - pz},{delay}")
+        command = f"{MPE_CHAIN_PREFIX} {'|'.join(parts)} {_format_options(config)}"
+        commands.append(
+            f"setblock {px} {py} {pz} minecraft:command_block[facing=up]"
+            f"{{Command:{json.dumps(command, ensure_ascii=False)}}}")
+        # 命令方块放在走廊下方；激活红石块放在它侧面，
+        # 避免占掉走廊地板。
+        activations[f"particles{index}"] = (px, py, pz + 1)
+    return commands, activations
+
+
 def build_particle_commands(
     note_events: List[Tuple[int, int, int, int, int, int]],
     activation_positions: Dict[int, Tuple[int, int, int]],

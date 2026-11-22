@@ -65,7 +65,11 @@ from .layout import (
     compute_offsets,
 )
 from .lyrics import build_lyrics_chain, edit_lyrics_menu
-from .particles import build_particle_commands, edit_particle_settings
+from .particles import (
+    build_curve_particle_commands,
+    build_particle_commands,
+    edit_particle_settings,
+)
 from .curve import build_curve_commands
 from .simulate import Simulator, check_structure, compare, format_report, load_schem
 
@@ -616,7 +620,12 @@ def build_commands(config: dict, song, virtual_layers: List[dict],
         if plan.get("multi_cells"):
             print(Ansi.info(
                 f"提示：{plan['multi_cells']} 个 tick 在同一轨道同时触发多个音符盒，"
+                f"由中间音符盒被中继器强充能、再弱充能带动并排音符盒；"
                 f"它们共用同一半径，音量以最响音符为准。"))
+        if meta.get("multi_avoided"):
+            print(Ansi.prompt(
+                f"提示：有 {meta['multi_avoided']} 个并排音符盒会与其它轨道串线，"
+                f"已自动省略并只保留中间音符。"))
         if plan.get("deviations"):
             print(Ansi.prompt(
                 f"警告：有 {plan['deviations']} 个 tick 的实际音量与 NBS 目标偏差超过 6%"
@@ -628,14 +637,63 @@ def build_commands(config: dict, song, virtual_layers: List[dict],
         if meta.get("crossing"):
             print(Ansi.prompt(
                 f"警告：检测到 {meta['crossing']} 处红石粉与其它轨道相邻，"
-                f"可能串线；已尽量把轨道分到不同高度层。"))
+                f"存在真正串线，程序已尽力避开但仍无法自动解决。"))
+        if meta.get("touching"):
+            print(Ansi.prompt(
+                f"警告：检测到 {meta['touching']} 处跨轨道方块接触，"
+                f"可能误触发，请把对应轨道错开。"))
+        if meta.get("bridge_ok"):
+            print(Ansi.info(
+                f"实验性静音裁剪：已用线路桥唤醒 {meta['bridge_ok']} 条音轨，"
+                f"线路延迟已计入时序。"))
+        if meta.get("world_crossing"):
+            print(Ansi.prompt(
+                f"警告：几何复核发现 {meta['world_crossing']} 处可能的串线 / 误接触。"))
+        if meta.get("unpowered_dust"):
+            print(Ansi.prompt(
+                f"警告：有 {meta['unpowered_dust']} 段红石粉没有合法电源，"
+                f"弱充能方块不能给红石粉供电。"))
+        if meta.get("dust_side_notes"):
+            print(Ansi.prompt(
+                f"警告：有 {meta['dust_side_notes']} 个音符盒只贴着红石粉侧面，"
+                f"端点没有朝向它，不会发声。"))
+        if meta.get("floating_parts"):
+            print(Ansi.prompt(
+                f"警告：有 {meta['floating_parts']} 个红石粉 / 中继器缺少支撑方块，"
+                f"粘贴后会掉落。"))
+        if meta.get("chain_gaps"):
+            print(Ansi.prompt(
+                f"警告：链路复核发现 {meta['chain_gaps']} 处断链，结构可能不发声。"))
+        if meta.get("bridge_skipped"):
+            print(Ansi.prompt(
+                f"提示：有 {meta['bridge_skipped']} 条被裁剪的音轨无法在阈值内搭桥，"
+                f"已自动恢复成完整的空音轨。"))
+        if meta.get("trim_aborted"):
+            print(Ansi.prompt(
+                f"提示：有 {meta['trim_aborted']} 条音轨找不到唤醒桥，已恢复完整开头。"))
+        if meta.get("dual_tracks"):
+            print(Ansi.info(
+                f"双轨音量：已生成 {meta['dual_tracks']} 条副音轨（同侧外扩，桥接对齐）。"))
+        if meta.get("dual_fallback"):
+            print(Ansi.info(
+                f"有 {meta['dual_fallback']} 条副音轨改用独立启动（从开头铺空链）。"))
+        if meta.get("dual_skipped"):
+            print(Ansi.prompt(
+                f"提示：有 {meta['dual_skipped']} 条副音轨无法生成，已回退到主轨。"))
         if meta.get("conflicts"):
             print(Ansi.prompt(
                 f"警告：有 {len(meta['conflicts'])} 处方块位置被覆盖冲突，"
                 f"结构可能不完整。"))
-        if config.get("lyrics_import") or (config.get("particles_enabled")
-                                           and config.get("particles_layers")):
-            print(Ansi.prompt("提示：音量控制排版暂不支持歌词 / 粒子轨道，本次已跳过。"))
+        if config.get("particles_enabled") and (config.get("particles_layers") or []):
+            particle_commands, particle_acts = build_curve_particle_commands(
+                meta["plan"], config, (0, 0, 0))
+            if particle_commands:
+                commands.extend(particle_commands)
+                activations.update(particle_acts)
+                print(Ansi.success(
+                    f"粒子特效：音量控制排版已生成 {len(particle_acts)} 颗球的绝对时间轴数据。"))
+        if config.get("lyrics_import"):
+            print(Ansi.prompt("提示：音量控制排版暂不支持歌词，本次已跳过。"))
         targets = sorted(activations.items(), key=lambda item: item[1])
         launch = _launch_chain(targets, (0, 0, 0), direction)
         return commands[:1] + launch + commands[1:]

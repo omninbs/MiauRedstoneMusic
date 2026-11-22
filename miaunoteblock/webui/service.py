@@ -59,7 +59,8 @@ PARAM_SPECS = {
     "curve_lane_spacing": {"label": "普通车道间距", "type": "int", "min": 3, "max": 24, "unit": "格"},
     "curve_master_spacing": {"label": "主音轨间距", "type": "int", "min": 3, "max": 24, "unit": "格"},
     "curve_corridor_height": {"label": "玩家走廊高度", "type": "int", "min": 2, "max": 8, "unit": "格"},
-    "curve_sound_range": {"label": "可听半径", "type": "float", "min": 8, "max": 128, "unit": "格"},
+    "curve_trim_seconds": {"label": "静音段删除阈值", "type": "float", "min": 0.2, "max": 60, "unit": "秒"},
+    "curve_dual_spacing": {"label": "副音轨外扩间距", "type": "int", "min": 3, "max": 24, "unit": "格"},
 }
 
 _LAYOUT_PARAMS = {
@@ -71,7 +72,10 @@ _LAYOUT_PARAMS = {
     "nest_circle": ["layout_radius", "nest_layers", "layer_gap", "master_group"],
     "nest_square": ["layout_radius", "nest_layers", "layer_gap", "master_group"],
     "curve": ["curve_lane_spacing", "curve_master_spacing", "curve_corridor_height",
-              "curve_sound_range", "curve_minecart", "curve_master_layers"],
+              "curve_minecart", "curve_master_layers",
+              "curve_trim_silent", "curve_trim_seconds",
+              "curve_dual_track", "curve_dual_spacing",
+              "curve_command_side"],
 }
 
 # 原版方块画廊：按用途分组，配合输入框让用户既能点选也能填模组 ID
@@ -119,7 +123,7 @@ BLOCK_GALLERY = [
         {"id": "minecraft:gray_concrete", "name": "灰色混凝土"},
         {"id": "minecraft:black_concrete", "name": "黑色混凝土"},
     ]},
-    {"id": "metal", "name": "矿物与功能方块", "blocks": [
+    {"id": "metal", "name": "矿物与装饰", "blocks": [
         {"id": "minecraft:copper_block", "name": "铜块"},
         {"id": "minecraft:iron_block", "name": "铁块"},
         {"id": "minecraft:gold_block", "name": "金块"},
@@ -127,15 +131,62 @@ BLOCK_GALLERY = [
         {"id": "minecraft:quartz_block", "name": "石英块"},
         {"id": "minecraft:smooth_quartz", "name": "平滑石英"},
         {"id": "minecraft:amethyst_block", "name": "紫水晶块"},
-        {"id": "minecraft:redstone_block", "name": "红石块"},
-        {"id": "minecraft:redstone_lamp", "name": "红石灯"},
         {"id": "minecraft:glass", "name": "玻璃"},
         {"id": "minecraft:tinted_glass", "name": "遮光玻璃"},
-        {"id": "minecraft:barrier", "name": "屏障"},
         {"id": "minecraft:packed_ice", "name": "浮冰"},
         {"id": "minecraft:blue_ice", "name": "蓝冰"},
         {"id": "minecraft:obsidian", "name": "黑曜石"},
         {"id": "minecraft:magma_block", "name": "岩浆块"},
+    ]},
+    {"id": "concrete", "name": "混凝土", "blocks": [
+        {"id": "minecraft:red_concrete", "name": "红色混凝土"},
+        {"id": "minecraft:orange_concrete", "name": "橙色混凝土"},
+        {"id": "minecraft:yellow_concrete", "name": "黄色混凝土"},
+        {"id": "minecraft:lime_concrete", "name": "黄绿色混凝土"},
+        {"id": "minecraft:cyan_concrete", "name": "青色混凝土"},
+        {"id": "minecraft:blue_concrete", "name": "蓝色混凝土"},
+        {"id": "minecraft:purple_concrete", "name": "紫色混凝土"},
+        {"id": "minecraft:pink_concrete", "name": "粉红色混凝土"},
+        {"id": "minecraft:brown_concrete", "name": "棕色混凝土"},
+        {"id": "minecraft:green_concrete", "name": "绿色混凝土"},
+        {"id": "minecraft:light_blue_concrete", "name": "淡蓝色混凝土"},
+        {"id": "minecraft:magenta_concrete", "name": "品红色混凝土"},
+    ]},
+    {"id": "terracotta", "name": "陶瓦", "blocks": [
+        {"id": "minecraft:terracotta", "name": "陶瓦"},
+        {"id": "minecraft:white_terracotta", "name": "白色陶瓦"},
+        {"id": "minecraft:light_gray_terracotta", "name": "淡灰色陶瓦"},
+        {"id": "minecraft:gray_terracotta", "name": "灰色陶瓦"},
+        {"id": "minecraft:black_terracotta", "name": "黑色陶瓦"},
+        {"id": "minecraft:brown_terracotta", "name": "棕色陶瓦"},
+        {"id": "minecraft:red_terracotta", "name": "红色陶瓦"},
+        {"id": "minecraft:orange_terracotta", "name": "橙色陶瓦"},
+        {"id": "minecraft:yellow_terracotta", "name": "黄色陶瓦"},
+        {"id": "minecraft:cyan_terracotta", "name": "青色陶瓦"},
+        {"id": "minecraft:blue_terracotta", "name": "蓝色陶瓦"},
+        {"id": "minecraft:purple_terracotta", "name": "紫色陶瓦"},
+    ]},
+    {"id": "light", "name": "玻璃与光源", "blocks": [
+        {"id": "minecraft:white_stained_glass", "name": "白色染色玻璃"},
+        {"id": "minecraft:gray_stained_glass", "name": "灰色染色玻璃"},
+        {"id": "minecraft:black_stained_glass", "name": "黑色染色玻璃"},
+        {"id": "minecraft:red_stained_glass", "name": "红色染色玻璃"},
+        {"id": "minecraft:blue_stained_glass", "name": "蓝色染色玻璃"},
+        {"id": "minecraft:glowstone", "name": "荧石"},
+        {"id": "minecraft:sea_lantern", "name": "海晶灯"},
+        {"id": "minecraft:shroomlight", "name": "菌光体"},
+        {"id": "minecraft:jack_o_lantern", "name": "南瓜灯"},
+    ]},
+    {"id": "nature", "name": "自然方块", "blocks": [
+        {"id": "minecraft:grass_block", "name": "草方块"},
+        {"id": "minecraft:dirt", "name": "泥土"},
+        {"id": "minecraft:coarse_dirt", "name": "砂土"},
+        {"id": "minecraft:podzol", "name": "灰化土"},
+        {"id": "minecraft:mycelium", "name": "菌丝体"},
+        {"id": "minecraft:moss_block", "name": "苔藓块"},
+        {"id": "minecraft:snow_block", "name": "雪块"},
+        {"id": "minecraft:clay", "name": "黏土"},
+        {"id": "minecraft:mud", "name": "泥巴"},
     ]},
 ]
 
@@ -143,6 +194,33 @@ _BLOCK_NAME_OVERRIDES = {
     "minecraft:oak_planks": "橡木木板",
     "minecraft:white_wool": "白色羊毛",
 }
+
+# 会被红石信号激活 / 发声 / 改变状态的方块：结构方块不能用它们，
+# 否则中继器一充能就会误触发（开门、亮灯、推方块、发声……）。
+_FUNCTIONAL_EXACT = {
+    "note_block", "jukebox", "observer", "piston", "sticky_piston",
+    "dispenser", "dropper", "hopper", "redstone_lamp", "redstone_block",
+    "redstone_torch", "redstone_wall_torch", "redstone_wire", "repeater",
+    "comparator", "lever", "target", "daylight_detector",
+    "sculk_sensor", "calibrated_sculk_sensor", "tripwire", "tripwire_hook",
+    "tnt", "command_block", "chain_command_block", "repeating_command_block",
+    "structure_block", "jigsaw", "bell", "lectern", "composter", "cauldron",
+    "respawn_anchor", "beacon", "crafter", "lightning_rod",
+}
+_FUNCTIONAL_SUFFIXES = (
+    "_button", "_pressure_plate", "_door", "_trapdoor", "_fence_gate", "_rail",
+)
+
+
+def is_functional_block(block: str) -> bool:
+    """判断方块是否会被红石激活（原版范围；模组方块无法判断，默认放行）。"""
+    raw = str(block or "").strip().lower()
+    if ":" not in raw:
+        return False
+    namespace, name = raw.split(":", 1)
+    if namespace != "minecraft":
+        return False
+    return name in _FUNCTIONAL_EXACT or name.endswith(_FUNCTIONAL_SUFFIXES)
 
 
 def pretty_block_name(block: str) -> str:
@@ -200,10 +278,31 @@ def _clean_block(value: str, fallback: str) -> str:
     return text
 
 
+def _structural_block(value: str, fallback: str) -> str:
+    """结构方块不能是可被红石激活的功能性方块。"""
+    block = _clean_block(value, fallback)
+    if block and is_functional_block(block):
+        raise ValueError(f"{block} 会被红石信号激活，不能作为结构方块")
+    return block
+
+
 def _coerce(key: str, value, current):
     """把网页传来的值限制在允许的类型与范围内。"""
     if key in ("empty_block", "support_block"):
-        return _clean_block(value, current)
+        return _structural_block(value, current)
+    if key in ("lane_block_left", "lane_block_right",
+               "lane_support_left", "lane_support_right"):
+        # 空字符串 = 跟随全局默认
+        return _structural_block(value, "")
+    if key == "curve_command_side":
+        text = str(value or "right").strip().lower()
+        return text if text in ("left", "right", "up", "down") else "right"
+    if key == "curve_trim_seconds":
+        return max(0.2, min(60.0, float(value)))
+    if key == "curve_dual_spacing":
+        return max(3, min(24, int(value)))
+    if key == "curve_trim_threshold":
+        return max(4, min(4096, int(value)))
     if key == "layout_style":
         allowed = {item["id"] for item in LAYOUT_STYLES}
         if value not in allowed:
@@ -245,8 +344,6 @@ def _coerce(key: str, value, current):
             raise ValueError("group_staircase_modes 必须是对象")
         return {str(int(k)): ("staircase" if v == "staircase" else "default")
                 for k, v in value.items()}
-    if key in ("curve_sound_range",):
-        return max(8.0, min(128.0, float(value)))
     if key in ("lyrics_jitter_x", "lyrics_jitter_y", "lyrics_jitter_z"):
         return max(0.0, min(32.0, float(value)))
     if key == "lyrics_scale":
@@ -636,8 +733,12 @@ class Session:
         if plan.get("multi_cells"):
             warnings.append(
                 f"有 {plan['multi_cells']} 个 tick 在同一轨道同时触发多个音符盒"
-                f"（由中间音符盒强充能、弱充能带动两侧），它们共用同一半径，"
+                f"（由中间音符盒强充能、弱充能带动并排音符盒），它们共用同一半径，"
                 f"音量以最响音符为准。")
+        if meta.get("multi_avoided"):
+            warnings.append(
+                f"有 {meta['multi_avoided']} 个并排音符盒会与其它轨道串线，"
+                f"已自动省略并只保留中间音符。")
         if plan.get("deviations"):
             warnings.append(
                 f"有 {plan['deviations']} 个 tick 的实际音量与 NBS 目标偏差超过 6%"
@@ -647,7 +748,50 @@ class Session:
                 f"有 {meta['note_overheads']} 个音符盒正上方被占用，可能影响发声。")
         if meta.get("crossing"):
             warnings.append(
-                f"检测到 {meta['crossing']} 处红石粉与其它轨道相邻，存在串线风险。")
+                f"检测到 {meta['crossing']} 处红石粉与其它轨道相邻，存在真正串线，"
+                f"程序已尽力避开但仍无法自动解决。")
+        if meta.get("touching"):
+            warnings.append(
+                f"检测到 {meta['touching']} 处跨轨道方块接触，可能误触发。")
+        if meta.get("world_crossing"):
+            warnings.append(
+                f"几何复核发现 {meta['world_crossing']} 处可能的串线 / 误接触"
+                f"（按红石连通规则检查），请查看预览中高亮的轨道。")
+        if meta.get("unpowered_dust"):
+            warnings.append(
+                f"红石电源复核发现 {meta['unpowered_dust']} 段红石粉没有合法电源"
+                f"（弱充能方块不能给粉供电），结构可能不响，请反馈这组参数。")
+        if meta.get("dust_side_notes"):
+            warnings.append(
+                f"有 {meta['dust_side_notes']} 个音符盒只贴着红石粉的侧面，"
+                f"粉的端点没有朝向它，实际不会发声。")
+        if meta.get("floating_parts"):
+            warnings.append(
+                f"有 {meta['floating_parts']} 个红石粉 / 中继器缺少支撑方块，"
+                f"粘贴后会直接掉落。")
+        if meta.get("chain_gaps"):
+            warnings.append(
+                f"链路复核发现 {meta['chain_gaps']} 处断链"
+                f"（缺少中继器/占位方块/横向粉/桥接入口），结构可能不发声。")
+        if meta.get("bridge_ok"):
+            warnings.append(
+                f"实验性静音裁剪：已用线路桥唤醒 {meta['bridge_ok']} 条音轨，"
+                f"并把线路延迟计入时序。")
+        if meta.get("bridge_skipped"):
+            warnings.append(
+                f"有 {meta['bridge_skipped']} 条被裁剪的音轨无法在阈值内搭桥"
+                f"（高度差或横向距离太大），已自动恢复成完整的空音轨。")
+        if meta.get("trim_aborted"):
+            warnings.append(
+                f"有 {meta['trim_aborted']} 条音轨找不到可用的唤醒桥，"
+                f"已恢复完整开头，避免整条轨道不发声。")
+        if meta.get("dual_tracks"):
+            warnings.append(
+                f"双轨音量：已为 {meta['dual_tracks']} 条副音轨分流低音量音符，"
+                f"副音轨位于同侧外侧并独立启动，保证不与主轨共用信号。")
+        if meta.get("dual_skipped"):
+            warnings.append(
+                f"有 {meta['dual_skipped']} 条副音轨无法生成，已回退到主轨。")
         if meta.get("conflicts"):
             warnings.append(
                 f"有 {len(meta['conflicts'])} 处方块位置被覆盖冲突，结构可能不完整。")
@@ -655,11 +799,9 @@ class Session:
             warnings.append(
                 f"方块数超过预览上限（{MAX_PREVIEW_BLOCKS}），已截断显示；"
                 f"缩小预览 tick 范围可看到完整局部。")
-        if self.config.get("layout_style") == "curve" and (
-                self.config.get("lyrics_import")
-                or (self.config.get("particles_enabled")
-                    and self.config.get("particles_layers"))):
-            warnings.append("音量控制排版暂不支持歌词 / 粒子轨道，生成时会自动跳过。")
+        if (self.config.get("layout_style") == "curve"
+                and self.config.get("lyrics_import")):
+            warnings.append("音量控制排版暂不支持歌词，生成时会自动跳过。")
         return warnings
 
     @staticmethod
